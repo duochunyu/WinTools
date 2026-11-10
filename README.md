@@ -1,5 +1,7 @@
 # WinTools
 
+[English](README.en.md) · **简体中文**
+
 Windows 多显示器工具：**跨屏拼接壁纸** + **显示器断电/重连后把窗口摆回原来的位置**。
 
 单文件 exe，静态 CRT，零运行时依赖，托盘常驻。双击打开设置面板，不需要安装、不写 Program Files、不联网。
@@ -240,7 +242,15 @@ group  zoom  focusX  focusY  dirty  image  m1;m2;...
 
 ---
 
-## 三、构建与测试
+## 三、下一步可能的方向
+
+- **动态桌面**：让桌面画面可以持续刷新，便于把个人工作台（日程、待办、监控指标等）直接嵌进桌面。
+- **窗口交互与桌面个性化**：在现有的窗口布局恢复之上，继续探索更主动的窗口操作，
+  以及其它 Windows 桌面层的个性化改造。
+
+---
+
+## 四、构建与测试
 
 前置：Visual Studio Build Tools（「使用 C++ 的桌面开发」）+ Windows 10/11 SDK。
 CMake、Ninja 由 VS 自带，`build.bat` 会自己进 `vcvars64` 并补 SDK 环境；
@@ -258,14 +268,14 @@ build\debug\bin\wintools_tests.exe         :: 102 个用例
 
 ---
 
-## 四、目录结构
+## 五、目录结构
 
 ```
 WinTools/
 ├── CMakeLists.txt / CMakePresets.json   单一构建入口，Ninja + cl.exe
 ├── assets/        wintools.ico、app.rc（版本信息）、app.manifest（Per-Monitor V2）
 ├── scripts/       构建、测试图生成、切片逐像素验证、面板截图、点击自动化、端到端恢复
-├── docs/panel.png 面板截图
+├── docs/          panel.png 截图、panel-demo.gif 演示动图
 ├── src/           main / app / core / platform/win / util
 ├── tests/         单测
 └── build/         生成目录，已 gitignore
@@ -273,7 +283,7 @@ WinTools/
 
 ---
 
-## 五、版本与许可
+## 六、版本与许可
 
 - 二进制版本资源为 `0.1.0.0`（`assets/app.rc`），与 Release tag 保持一致。
 - 仓库目前没有 LICENSE 文件，默认「保留所有权利」；若公开源码，发版前需补许可证。
