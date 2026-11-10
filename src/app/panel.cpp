@@ -13,6 +13,7 @@
 #include <string_view>
 
 #include "core/monitor.h"
+#include "util/i18n.h"
 #include "util/log.h"
 
 #ifndef DWMWA_WINDOW_CORNER_PREFERENCE
@@ -594,6 +595,10 @@ void DrawTextBlock(
         return;
     }
 
+    // Chinese is the canonical source string. Both the draw and the measurement resolve it
+    // through the same table, so a label is never measured in one language and drawn in another.
+    text = util::i18n::Text(text);
+
     const HGDIOBJ oldFont = ::SelectObject(dc, font);
     const COLORREF oldColor = ::SetTextColor(dc, color);
     const int oldMode = ::SetBkMode(dc, TRANSPARENT);
@@ -617,6 +622,10 @@ void DrawTextAt(
         return;
     }
 
+    // Chinese is the canonical source string. Both the draw and the measurement resolve it
+    // through the same table, so a label is never measured in one language and drawn in another.
+    text = util::i18n::Text(text);
+
     const HGDIOBJ oldFont = ::SelectObject(dc, font);
     const COLORREF oldColor = ::SetTextColor(dc, color);
     const int oldMode = ::SetBkMode(dc, TRANSPARENT);
@@ -638,6 +647,7 @@ SIZE MeasureText(HDC dc, HFONT font, std::wstring_view text)
         return size;
     }
 
+    text = util::i18n::Text(text);
     const HGDIOBJ oldFont = ::SelectObject(dc, font);
     ::GetTextExtentPoint32W(dc, text.data(), static_cast<int>(text.size()), &size);
     ::SelectObject(dc, oldFont);
@@ -2384,7 +2394,8 @@ void Panel::PaintWallpaperBlock(HDC dc, const Geometry& geometry)
     }
 
     DrawTextBlock(dc, m_fontAux, t.text4, geometry.groupMeta,
-        std::format(L"{} 台 · {} 组", m_state.monitors.size(), m_state.groups.size()), DT_RIGHT);
+        util::i18n::Format(L"{} 台 · {} 组", m_state.monitors.size(), m_state.groups.size()),
+        DT_RIGHT);
 
     PaintMap(dc, geometry);
 }
@@ -2926,14 +2937,16 @@ void Panel::PaintLayoutBlock(HDC dc, const Geometry& geometry)
         L"勾选框 = 记住窗口 · 滚动条 = 翻页", DT_LEFT | DT_END_ELLIPSIS);
 
     DrawTextBlock(dc, m_fontAux, t.text4, geometry.snapshotMeta,
-        m_state.snapshotAt.empty() ? std::wstring{}
-                                   : L"快照 " + m_state.snapshotAt + L" · 不是实时桌面",
+        m_state.snapshotAt.empty()
+            ? std::wstring{}
+            : util::i18n::Format(L"快照 {} · 不是实时桌面", m_state.snapshotAt),
         DT_RIGHT);
 
     const std::vector<int> rows = VisibleRows();
     DrawTextBlock(dc, m_fontAux, t.text4, geometry.windowMeta,
-        m_filter.empty() ? std::format(L"{} 个窗口", m_state.windows.size())
-                         : std::format(L"{} / {} 个窗口", rows.size(), m_state.windows.size()),
+        m_filter.empty()
+            ? util::i18n::Format(L"{} 个窗口", m_state.windows.size())
+            : util::i18n::Format(L"{} / {} 个窗口", rows.size(), m_state.windows.size()),
         DT_RIGHT);
 
     PaintWindowList(dc, geometry);
@@ -3009,7 +3022,8 @@ void Panel::PaintWindowList(HDC dc, const Geometry& geometry)
         // "屏 1 · 最大化": the number in the accent colour, because which screen a window belongs
         // to is the one thing the list is scanned for.
         const std::wstring label =
-            std::format(L"屏 {}", core::ScreenNumber(window.monitorPath, m_state.monitors));
+            util::i18n::Format(L"屏 {}",
+                core::ScreenNumber(window.monitorPath, m_state.monitors));
         const int labelWidth = static_cast<int>(MeasureText(m_measure, m_fontAuxBold, label).cx);
 
         DrawTextBlock(dc, m_fontAuxBold,
@@ -3018,7 +3032,8 @@ void Panel::PaintWindowList(HDC dc, const Geometry& geometry)
 
         DrawTextBlock(dc, m_fontAux, window.enabled ? t.text3 : Mix(t.text3, t.bg, 0.5),
             RECT{ whereLeft + labelWidth, row.top, row.right - 11, row.bottom },
-            L" · " + window.where, DT_LEFT | DT_END_ELLIPSIS);
+            L" · " + std::wstring{ util::i18n::Text(window.where) },
+            DT_LEFT | DT_END_ELLIPSIS);
 
         if (slot + 1 < geometry.listRows)
         {
@@ -3107,7 +3122,9 @@ void Panel::PaintFooter(HDC dc, const Geometry& geometry)
     }
 
     DrawTextBlock(dc, m_fontAux, m_state.statusIsError ? t.danger : t.text3, geometry.statusText,
-        m_state.busy ? (L"正在处理… " + m_state.busyLabel) : m_state.status,
+        m_state.busy
+            ? util::i18n::Format(L"正在处理… {}", util::i18n::Text(m_state.busyLabel))
+            : m_state.status,
         DT_LEFT | DT_END_ELLIPSIS);
 
     DrawButton(dc, m_measure, t, m_fontBody, geometry.quit, L"退出", false, m_hot == Hot::Quit,
@@ -3124,7 +3141,7 @@ void Panel::PaintHistory(HDC dc, const Geometry& geometry)
     DrawTextBlock(dc, m_fontAux, t.text4,
         RECT{ geometry.history.left + 10, geometry.history.top + 6, geometry.history.right - 10,
             geometry.history.top + 22 },
-        L"最近 3 条状态（错误不会被下一次成功悄悄抹掉）", DT_LEFT);
+        L"最近 3 条状态（错误不会被下一次成功悄悄抹掉）", DT_LEFT | DT_END_ELLIPSIS);
 
     int y = geometry.history.top + 22;
 
@@ -3167,10 +3184,14 @@ std::vector<Panel::PopupEntry> Panel::PopupItems() const
     switch (m_popup)
     {
         case Popup::AppMenu:
-            items.push_back(PopupEntry{ .text = L"查看日志" });
-            items.push_back(PopupEntry{ .text = L"状态记录", .checked = m_historyOpen });
+            // ids, not row indexes: the separator occupies an index, and clicking the row after
+            // it used to fall through to nothing.
+            items.push_back(PopupEntry{ .text = L"查看日志", .id = 0 });
+            items.push_back(PopupEntry{ .text = L"状态记录", .id = 1, .checked = m_historyOpen });
             items.push_back(PopupEntry{ .separator = true });
-            items.push_back(PopupEntry{ .text = L"开机启动", .checked = m_state.autostart });
+            items.push_back(PopupEntry{ .text = L"开机启动", .id = 2, .checked = m_state.autostart });
+            items.push_back(PopupEntry{
+                .text = std::wstring{ util::i18n::LanguageLabel() }, .id = 3 });
             return items;
 
         case Popup::GroupJoin:
@@ -3195,8 +3216,8 @@ std::vector<Panel::PopupEntry> Panel::PopupItems() const
 
                 const core::Group& group = m_state.groups[static_cast<size_t>(slot)];
                 PopupEntry entry;
-                entry.text = L"加入 " + core::GroupLabel(group, m_state.monitors);
-                entry.trailing = std::format(L"{} 台", group.members.size());
+                entry.text = util::i18n::Format(L"加入 {}", core::GroupLabel(group, m_state.monitors));
+                entry.trailing = util::i18n::Format(L"{} 台", group.members.size());
                 entry.pipIndex = slot;
                 entry.id = slot;
                 items.push_back(entry);
@@ -3236,7 +3257,7 @@ std::vector<Panel::PopupEntry> Panel::PopupItems() const
                 PopupEntry entry;
                 const std::wstring screen =
                     std::to_wstring(core::ScreenNumber(path, m_state.monitors));
-                entry.text = L"合并 屏 " + screen;
+                entry.text = util::i18n::Format(L"合并 屏 {}", screen);
 
                 // A group with one screen is named after that screen, so "合并 屏 3 …… 3" says
                 // the same thing twice. The trailing column is for the case where it adds
@@ -3269,7 +3290,7 @@ std::wstring Panel::PopupHead() const
         case Popup::GroupJoin:
             if (m_popupIndex >= 0 && m_popupIndex < static_cast<int>(m_state.monitors.size()))
             {
-                return std::format(L"调整 屏 {} 的分组",
+                return util::i18n::Format(L"调整 屏 {} 的分组",
                     core::ScreenNumber(
                         m_state.monitors[static_cast<size_t>(m_popupIndex)].devicePath,
                         m_state.monitors));
@@ -3279,7 +3300,8 @@ std::wstring Panel::PopupHead() const
         case Popup::GroupMerge:
             if (const core::Group* active = m_state.ActiveGroup(); active != nullptr)
             {
-                return L"合并到「" + core::GroupLabel(*active, m_state.monitors) + L"」";
+                return util::i18n::Format(L"合并到「{}」",
+                    core::GroupLabel(*active, m_state.monitors));
             }
             return {};
 
@@ -3293,7 +3315,7 @@ RECT Panel::PopupRect(const Geometry& geometry) const
     const std::vector<PopupEntry> items = PopupItems();
     const std::wstring head = PopupHead();
 
-    int width = m_popup == Popup::AppMenu ? 168 : 216;
+    int width = m_popup == Popup::AppMenu ? 196 : 216;
     for (const auto& item : items)
     {
         if (item.separator)
@@ -3480,12 +3502,15 @@ Panel::ModalLayout Panel::LayoutModal(const Geometry& geometry) const
 {
     ModalLayout layout;
 
-    const int width = 440;
+    // English labels are roughly twice as long as their Chinese counterparts. The card is
+    // sized for the longer language so neither version clips a line; 560 still leaves 130
+    // design units of sheet on either side.
+    const int width = 560;
     const bool help = m_modal == Modal::Help;
 
     // Height follows the content: seven key lines, four notes, then the button row. A fixed
     // height was leaving a hand's width of blank card under a two-line confirmation.
-    const int height = help ? 336 : 168;
+    const int height = help ? 304 : 168;
 
     layout.card = RECT{ (kWidth - width) / 2, (geometry.clientHeight - height) / 2,
         (kWidth + width) / 2, (geometry.clientHeight + height) / 2 };
@@ -3560,7 +3585,7 @@ void Panel::PaintModal(HDC dc, const Geometry& geometry)
                 DT_LEFT);
             DrawTextBlock(dc, m_fontAux, t.text3,
                 RECT{ layout.card.left + 176, y, layout.card.right - 20, y + 16 }, line.what,
-                DT_LEFT);
+                DT_LEFT | DT_END_ELLIPSIS);
             y += 18;
         }
 
@@ -3568,7 +3593,8 @@ void Panel::PaintModal(HDC dc, const Geometry& geometry)
         for (const wchar_t* note : kNotes)
         {
             DrawTextBlock(dc, m_fontAux, t.text2,
-                RECT{ layout.card.left + 20, y, layout.card.right - 20, y + 16 }, note, DT_LEFT);
+                RECT{ layout.card.left + 20, y, layout.card.right - 20, y + 16 }, note,
+                DT_LEFT | DT_END_ELLIPSIS);
             y += 18;
         }
     }
@@ -3577,11 +3603,12 @@ void Panel::PaintModal(HDC dc, const Geometry& geometry)
         DrawTextBlock(dc, m_fontBody, t.text3,
             RECT{ layout.card.left + 20, layout.card.top + 46, layout.card.right - 20,
                 layout.card.top + 68 },
-            L"退出后不再监听显示器变化，窗口布局也不会再自动恢复。", DT_LEFT);
+            L"退出后不再监听显示器变化，窗口布局也不会再自动恢复。",
+            DT_LEFT | DT_END_ELLIPSIS);
         DrawTextBlock(dc, m_fontBody, t.text3,
             RECT{ layout.card.left + 20, layout.card.top + 70, layout.card.right - 20,
                 layout.card.top + 92 },
-            L"只想收起面板，请点标题栏右侧的 ×。", DT_LEFT);
+            L"只想收起面板，请点标题栏右侧的 ×。", DT_LEFT | DT_END_ELLIPSIS);
     }
 
     if (help)
@@ -3833,19 +3860,24 @@ void Panel::ActivatePopup(int item)
     switch (kind)
     {
         case Popup::AppMenu:
-            if (item == 0)
+            switch (entry.id)
             {
-                emit(PanelAction::OpenLog);
-            }
-            else if (item == 1)
-            {
-                m_historyOpen = !m_historyOpen;
-                ResizeToContent();
-                ::InvalidateRect(m_window, nullptr, FALSE);
-            }
-            else if (item == 2)
-            {
-                emit(PanelAction::ToggleAutostart);
+                case 0:
+                    emit(PanelAction::OpenLog);
+                    break;
+                case 1:
+                    m_historyOpen = !m_historyOpen;
+                    ResizeToContent();
+                    ::InvalidateRect(m_window, nullptr, FALSE);
+                    break;
+                case 2:
+                    emit(PanelAction::ToggleAutostart);
+                    break;
+                case 3:
+                    emit(PanelAction::CycleLanguage);
+                    break;
+                default:
+                    break;
             }
             return;
 

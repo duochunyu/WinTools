@@ -5,19 +5,22 @@
 Windows 多显示器工具：**跨屏拼接壁纸** + **显示器断电/重连后把窗口摆回原来的位置**。
 
 单文件 exe，静态 CRT，零运行时依赖，托盘常驻。双击打开设置面板，不需要安装、不写 Program Files、不联网。
+面板、托盘菜单、状态消息、命令行帮助与日志均支持简体中文 / English，可跟随系统或手动指定。
 
 | | |
 |---|---|
 | 适用系统 | Windows 10 1809+ / Windows 11，x64 |
 | 当前版本 | v0.1.0 |
-| 产物 | 884,224 字节，只导入 7 个系统 DLL |
-| 实现 | C++23 / Win32 / WIC / 自绘 GDI，无第三方库 |
-| 测试 | 102 个单测，debug / release 双绿 |
+| 产物 | 914,432 字节，只导入 7 个系统 DLL |
+| 实现 | C++20 / Win32 / WIC / 自绘 GDI，无第三方库 |
+| 测试 | 108 个单测，debug / release 双绿 |
 
 ![WinTools 设置面板](docs/panel.png)
 
 > 实机面板（1025×934）。截图使用中性示例数据：3 台显示器、2 个组合、7 个示例窗口；
 > 壁纸是本项目自制的示意图，不含真实窗口标题、文件路径或个人内容。
+>
+> 英文界面截图见 [panel-en.png](docs/panel-en.png)，英文演示动图见 [panel-demo-en.gif](docs/panel-demo-en.gif)。
 
 ---
 
@@ -36,6 +39,7 @@ Windows 多显示器工具：**跨屏拼接壁纸** + **显示器断电/重连�
 | 逐窗口排除 | 行首勾选框决定「记不记得住」，取消勾选不删行 |
 | 按屏筛选 | 布局区的纯数字 chip 可多选，一个都不选 = 全部 |
 | 主题 | 浅色 / 深色 / 跟随系统，标题栏 `◐` 循环，选择落盘 |
+| 界面语言 | 简体中文 / English，齿轮菜单循环「跟随系统 → 简体中文 → English」，设置落盘 |
 | 状态记录 | 页脚保留最近三条结果，失败不会被下一次成功直接抹掉 |
 | 全键盘操作 | Tab 焦点环、1~9 切组、`+ - 0` 缩放复位、方向键平移、Ctrl+Z 撤销勾选、Esc 关弹层 |
 | 托盘与自启 | 托盘菜单含「更换壁纸 / 还原壁纸 / 刷新布局 / 恢复布局 / 退出」，可设开机自启 |
@@ -141,7 +145,7 @@ main.cpp                      wWinMain，借用父控制台后分发子命令
     │   └── display_watcher
     │
     ├── platform/win/         COM RAII、WIC 工厂
-    └── util/                 path / text / log
+    └── util/                 path / text / log / i18n
 ```
 
 三条约束贯穿全项目：
@@ -165,6 +169,8 @@ main.cpp                      wWinMain，借用父控制台后分发子命令
 | 自绘渲染 | borderless `WS_POPUP`，整块客户区画进 32bpp DIB；圆角按距离场逐像素抗锯齿 |
 | 异步反馈 | 长任务先绘制 busy 帧，再交给后台线程，完成后 `PostMessage(WM_APP+4)` 回 UI 线程 |
 | 容错 | COM 失败只记日志、返回 false，不抛异常；日志带毫秒时间戳，1 MB 轮转 |
+| 中英双语 | 中文原文即查表键，绘制、量字、日志、菜单与 CLI 走同一套资源层；缺项回退中文 |
+| 语言即时切换 | 齿轮菜单改设置后立即刷新，按钮/chip/标签按新语言重新测量，不重启 |
 
 ### 2.3 组合模型
 
@@ -226,7 +232,7 @@ group  zoom  focusX  focusY  dirty  image  m1;m2;...
 
 ```
 %LOCALAPPDATA%\WinTools\
-├── settings.txt        主题、自动恢复、自启、当前组合、去抖秒数
+├── settings.txt        主题、界面语言、自动恢复、自启、当前组合、去抖秒数
 ├── groups.tsv          组合定义（当前壁纸配置的主文件）
 ├── layout.txt          窗口布局快照
 ├── wallpapers.txt      旧格式迁移来源
@@ -259,12 +265,12 @@ CMake、Ninja 由 VS 自带，`build.bat` 会自己进 `vcvars64` 并补 SDK 环
 ```bat
 scripts\build.bat                          :: debug
 scripts\build.bat windows-x64-release      :: release
-build\debug\bin\wintools_tests.exe         :: 102 个用例
+build\debug\bin\wintools_tests.exe         :: 108 个用例
 ```
 
 产物在 `build\<配置>\bin\`，Release 的 `WinTools.exe` 可单独拷走。
 单测分组：几何 14、摆放计划/停靠识别 24、布局文件 8、逐屏壁纸 8、组合模型 17、
-切片缓存 5、预览 3、面板 23。
+界面语言 6、切片缓存 5、预览 3、面板 23。
 
 ---
 
@@ -275,7 +281,7 @@ WinTools/
 ├── CMakeLists.txt / CMakePresets.json   单一构建入口，Ninja + cl.exe
 ├── assets/        wintools.ico、app.rc（版本信息）、app.manifest（Per-Monitor V2）
 ├── scripts/       构建、测试图生成、切片逐像素验证、面板截图、点击自动化、端到端恢复
-├── docs/          panel.png 截图、panel-demo.gif 演示动图
+├── docs/          panel.png / panel-en.png 截图，panel-demo.gif / panel-demo-en.gif 演示动图
 ├── src/           main / app / core / platform/win / util
 ├── tests/         单测
 └── build/         生成目录，已 gitignore

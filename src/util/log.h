@@ -5,6 +5,8 @@
 #include <string_view>
 #include <utility>
 
+#include "util/i18n.h"
+
 namespace wintools::util
 {
 
@@ -23,22 +25,28 @@ enum class LogLevel
 /// as UTF-8 instead.
 void LogMessage(LogLevel level, std::wstring_view message);
 
+// The Chinese format string is the lookup key. Resolving it here instead of at each call
+// site means both the console and WinTools.log follow the selected language, and the
+// compile-time format check still applies to the source string.
 template <typename... Args>
 void LogInfo(std::wformat_string<Args...> format, Args&&... args)
 {
-    LogMessage(LogLevel::Info, std::format(format, std::forward<Args>(args)...));
+    LogMessage(LogLevel::Info,
+        std::vformat(i18n::Text(format.get()), std::make_wformat_args(args...)));
 }
 
 template <typename... Args>
 void LogWarn(std::wformat_string<Args...> format, Args&&... args)
 {
-    LogMessage(LogLevel::Warn, std::format(format, std::forward<Args>(args)...));
+    LogMessage(LogLevel::Warn,
+        std::vformat(i18n::Text(format.get()), std::make_wformat_args(args...)));
 }
 
 template <typename... Args>
 void LogError(std::wformat_string<Args...> format, Args&&... args)
 {
-    LogMessage(LogLevel::Error, std::format(format, std::forward<Args>(args)...));
+    LogMessage(LogLevel::Error,
+        std::vformat(i18n::Text(format.get()), std::make_wformat_args(args...)));
 }
 
 } // namespace wintools::util

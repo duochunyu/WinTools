@@ -14,6 +14,7 @@
 #include "core/state.h"
 #include "core/wallpaper_store.h"
 #include "platform/win/com.h"
+#include "util/i18n.h"
 #include "util/log.h"
 #include "util/path.h"
 #include "util/text.h"
@@ -37,8 +38,7 @@ bool OpenWallpaper(core::DesktopWallpaper& wallpaper, ActionResult& result)
     }
 
     result.ok = false;
-    result.message = L"无法访问壁纸接口";
-    LogError(L"无法创建桌面壁纸 COM 对象");
+    result.message = util::i18n::Text(L"无法访问壁纸接口");    LogError(L"无法创建桌面壁纸 COM 对象");
     return false;
 }
 
@@ -48,8 +48,7 @@ std::vector<core::Monitor> CollectMonitors(const core::DesktopWallpaper& wallpap
     if (monitors.empty())
     {
         result.ok = false;
-        result.message = L"没有检测到任何显示器";
-        LogError(L"没有枚举到任何显示器：当前会话可能不是交互式桌面，或者 shell 接口不可用");
+        result.message = util::i18n::Text(L"没有检测到任何显示器");        LogError(L"没有枚举到任何显示器：当前会话可能不是交互式桌面，或者 shell 接口不可用");
     }
     else
     {
@@ -80,7 +79,7 @@ std::wstring LastWriteLabel(const std::filesystem::path& file)
         return {};
     }
 
-    return std::format(L"{:02}-{:02} {:02}:{:02}", time.wMonth, time.wDay, time.wHour, time.wMinute);
+    return util::i18n::Format(L"{:02}-{:02} {:02}:{:02}", time.wMonth, time.wDay, time.wHour, time.wMinute);
 }
 
 /// Read-modify-write of the saved layout, used by every panel edit.
@@ -95,22 +94,19 @@ ActionResult UpdateSavedWindow(int index, Edit&& edit)
     auto layout = core::LoadLayout(file);
     if (!layout.has_value())
     {
-        result.message = L"还没有保存";
-        return result;
+        result.message = util::i18n::Text(L"还没有保存");        return result;
     }
 
     if (index < 0 || index >= static_cast<int>(layout->windows.size()))
     {
-        result.message = L"窗口已不在布局里";
-        return result;
+        result.message = util::i18n::Text(L"窗口已不在布局里");        return result;
     }
 
     edit(layout->windows[index]);
 
     if (!core::SaveLayout(*layout, file))
     {
-        result.message = L"布局文件写入失败";
-        return result;
+        result.message = util::i18n::Text(L"布局文件写入失败");        return result;
     }
 
     result.ok = true;
@@ -202,8 +198,7 @@ ActionResult ApplySpanningWallpaper(
     if (pieces.empty())
     {
         result.ok = false;
-        result.message = L"没有生成任何切片";
-        LogError(L"没有生成任何切片，放弃应用");
+        result.message = util::i18n::Text(L"没有生成任何切片");        LogError(L"没有生成任何切片，放弃应用");
         return result;
     }
 
@@ -213,7 +208,7 @@ ActionResult ApplySpanningWallpaper(
     {
         LogInfo(L"--dry-run：未修改壁纸");
         result.ok = allRendered;
-        result.message = std::format(L"演练完成，生成 {} 张切片", pieces.size());
+        result.message = util::i18n::Format(L"演练完成，生成 {} 张切片", pieces.size());
         return result;
     }
 
@@ -227,8 +222,7 @@ ActionResult ApplySpanningWallpaper(
     if (!wallpaper.SetPosition(core::WallpaperPosition::Center))
     {
         result.ok = false;
-        result.message = L"无法设为居中";
-        LogError(L"无法把壁纸位置设为 Center");
+        result.message = util::i18n::Text(L"无法设为居中");        LogError(L"无法把壁纸位置设为 Center");
         return result;
     }
 
@@ -252,7 +246,7 @@ ActionResult ApplySpanningWallpaper(
     if (applied != static_cast<int>(pieces.size()) || !allRendered)
     {
         result.ok = false;
-        result.message = std::format(L"只成功贴上 {} / {} 台显示器", applied, monitors.size());
+        result.message = util::i18n::Format(L"只成功贴上 {} / {} 台显示器", applied, monitors.size());
         LogError(L"部分显示器贴图失败，可用 restore 回滚");
         return result;
     }
@@ -266,7 +260,7 @@ ActionResult ApplySpanningWallpaper(
     }
 
     result.ok = true;
-    result.message = std::format(L"已铺满 {} 台显示器", monitors.size());
+    result.message = util::i18n::Format(L"已铺满 {} 台显示器", monitors.size());
     return result;
 }
 
@@ -367,15 +361,14 @@ ActionResult ApplyGroups(const std::vector<core::Group>& groups,
     if (applied.empty())
     {
         result.ok = false;
-        result.message = L"还没有组合选过图片";
-        LogWarn(L"没有任何组合带图片，未修改壁纸");
+        result.message = util::i18n::Text(L"还没有组合选过图片");        LogWarn(L"没有任何组合带图片，未修改壁纸");
         return result;
     }
 
     if (dryRun)
     {
         result.ok = everyGroupRendered;
-        result.message = std::format(L"演练完成，生成 {} 张切片", applied.size());
+        result.message = util::i18n::Format(L"演练完成，生成 {} 张切片", applied.size());
         return result;
     }
 
@@ -386,8 +379,7 @@ ActionResult ApplyGroups(const std::vector<core::Group>& groups,
     if (!wallpaper.SetPosition(core::WallpaperPosition::Center))
     {
         result.ok = false;
-        result.message = L"无法设为居中";
-        LogError(L"无法把壁纸位置设为 Center");
+        result.message = util::i18n::Text(L"无法设为居中");        LogError(L"无法把壁纸位置设为 Center");
         return result;
     }
 
@@ -403,7 +395,7 @@ ActionResult ApplyGroups(const std::vector<core::Group>& groups,
     if (pasted != static_cast<int>(applied.size()) || !everyGroupRendered)
     {
         result.ok = false;
-        result.message = std::format(L"只成功贴上 {} / {} 台显示器", pasted, screens);
+        result.message = util::i18n::Format(L"只成功贴上 {} / {} 台显示器", pasted, screens);
         LogError(L"部分显示器贴图失败，可用 restore 回滚");
         return result;
     }
@@ -418,8 +410,8 @@ ActionResult ApplyGroups(const std::vector<core::Group>& groups,
 
     result.ok = true;
     result.message = groupsRendered > 1
-        ? std::format(L"已贴 {} 张切片 · {} 组合 {} 台屏", pasted, groupsRendered, screens)
-        : std::format(L"已贴 {} 张切片 · {} 台屏", pasted, screens);
+        ? util::i18n::Format(L"已贴 {} 张切片 · {} 组合 {} 台屏", pasted, groupsRendered, screens)
+        : util::i18n::Format(L"已贴 {} 张切片 · {} 台屏", pasted, screens);
     return result;
 }
 
@@ -435,8 +427,7 @@ ActionResult SetDisplayPicture(const std::wstring& devicePath, const std::filesy
 
     if (devicePath.empty())
     {
-        result.message = L"没有选中显示器";
-        return result;
+        result.message = util::i18n::Text(L"没有选中显示器");        return result;
     }
 
     // Read-modify-write, like the layout edits: two windows cannot race here, but a file edited
@@ -447,8 +438,7 @@ ActionResult SetDisplayPicture(const std::wstring& devicePath, const std::filesy
 
     if (!core::SaveMonitorWallpapers(stored, file))
     {
-        result.message = L"逐屏壁纸写入失败";
-        LogError(L"无法保存逐屏壁纸: {}", file.wstring());
+        result.message = util::i18n::Text(L"逐屏壁纸写入失败");        LogError(L"无法保存逐屏壁纸: {}", file.wstring());
         return result;
     }
 
@@ -471,23 +461,20 @@ ActionResult RestoreSavedWallpaper()
     if (!state.has_value())
     {
         result.ok = false;
-        result.message = L"没有保存过原壁纸，无法还原";
-        LogError(L"没有找到状态文件，无可恢复: {}", stateFile.wstring());
+        result.message = util::i18n::Text(L"没有保存过原壁纸，无法还原");        LogError(L"没有找到状态文件，无可恢复: {}", stateFile.wstring());
         return result;
     }
 
     if (!core::RestoreState(wallpaper, *state))
     {
         result.ok = false;
-        result.message = L"还原未完成，详情见日志";
-        LogError(L"恢复未完全成功，可检查上面几行的具体失败项");
+        result.message = util::i18n::Text(L"还原未完成，详情见日志");        LogError(L"恢复未完全成功，可检查上面几行的具体失败项");
         return result;
     }
 
     LogInfo(L"壁纸已恢复");
     result.ok = true;
-    result.message = L"已还原";
-    return result;
+    result.message = util::i18n::Text(L"已还原");    return result;
 }
 
 ActionResult CaptureCurrentLayout(int& windowCount, int& monitorCount)
@@ -501,8 +488,7 @@ ActionResult CaptureCurrentLayout(int& windowCount, int& monitorCount)
     if (layout.windows.empty())
     {
         result.ok = false;
-        result.message = L"没有找到可记录的窗口";
-        LogWarn(L"没有枚举到任何可管理的窗口");
+        result.message = util::i18n::Text(L"没有找到可记录的窗口");        LogWarn(L"没有枚举到任何可管理的窗口");
         return result;
     }
 
@@ -529,13 +515,12 @@ ActionResult CaptureCurrentLayout(int& windowCount, int& monitorCount)
     if (!core::SaveLayout(layout, file))
     {
         result.ok = false;
-        result.message = L"布局文件写入失败";
-        return result;
+        result.message = util::i18n::Text(L"布局文件写入失败");        return result;
     }
 
     LogInfo(L"已保存布局: {} 个窗口 / {} 台显示器 -> {}", windowCount, monitorCount, file.wstring());
     result.ok = true;
-    result.message = std::format(L"已记录 {} 个窗口", windowCount);
+    result.message = util::i18n::Format(L"已记录 {} 个窗口", windowCount);
     return result;
 }
 
@@ -549,8 +534,7 @@ ActionResult RestoreSavedLayout(core::RestoreStats& stats, core::RestoreScope sc
     if (!layout.has_value())
     {
         result.ok = false;
-        result.message = L"还没有保存";
-        return result;
+        result.message = util::i18n::Text(L"还没有保存");        return result;
     }
 
     stats = core::RestoreLayout(*layout, scope);
@@ -562,45 +546,41 @@ ActionResult RestoreSavedLayout(core::RestoreStats& stats, core::RestoreScope sc
     std::wstring message;
     if (stats.moved > 0)
     {
-        message = std::format(L"已摆好 {} 个窗口", stats.moved);
+        message = util::i18n::Format(L"已摆好 {} 个窗口", stats.moved);
     }
     else if (stats.alreadyInPlace > 0)
     {
-        message = L"窗口都还在原位";
-    }
+        message = util::i18n::Text(L"窗口都还在原位");    }
     else if (stats.skippedMissingMonitor > 0)
     {
-        message = L"布局里涉及的显示器现在都不在";
-    }
+        message = util::i18n::Text(L"布局里涉及的显示器现在都不在");    }
     else if (stats.skippedDisabled > 0)
     {
-        message = L"布局里的窗口都被取消勾选了";
-    }
+        message = util::i18n::Text(L"布局里的窗口都被取消勾选了");    }
     else
     {
-        message = L"布局里的程序都没有在运行";
-    }
+        message = util::i18n::Text(L"布局里的程序都没有在运行");    }
 
     std::vector<std::wstring> notes;
     if (stats.moved > 0 && stats.alreadyInPlace > 0)
     {
-        notes.push_back(std::format(L"{} 个本来就在位", stats.alreadyInPlace));
+        notes.push_back(util::i18n::Format(L"{} 个本来就在位", stats.alreadyInPlace));
     }
     if (stats.missingWindow > 0)
     {
-        notes.push_back(std::format(L"{} 个程序没运行", stats.missingWindow));
+        notes.push_back(util::i18n::Format(L"{} 个程序没运行", stats.missingWindow));
     }
     if (stats.skippedMissingMonitor > 0)
     {
-        notes.push_back(std::format(L"{} 个显示器不在", stats.skippedMissingMonitor));
+        notes.push_back(util::i18n::Format(L"{} 个显示器不在", stats.skippedMissingMonitor));
     }
     if (stats.skippedDisabled > 0)
     {
-        notes.push_back(std::format(L"{} 个已取消勾选", stats.skippedDisabled));
+        notes.push_back(util::i18n::Format(L"{} 个已取消勾选", stats.skippedDisabled));
     }
     if (stats.failed > 0)
     {
-        notes.push_back(std::format(L"{} 个摆放失败", stats.failed));
+        notes.push_back(util::i18n::Format(L"{} 个摆放失败", stats.failed));
     }
 
     if (!notes.empty())
@@ -610,12 +590,12 @@ ActionResult RestoreSavedLayout(core::RestoreStats& stats, core::RestoreScope sc
         {
             if (!joined.empty())
             {
-                joined += L"，";
+                joined += std::wstring{ util::i18n::Text(L"，") };
             }
             joined += note;
         }
 
-        message += L"（" + joined + L"）";
+        message += util::i18n::Format(L"（{}）", joined);
     }
 
     result.message = std::move(message);
@@ -668,7 +648,8 @@ ActionResult SetWindowRemembered(int index, bool remembered)
 
     if (result.ok)
     {
-        result.message = remembered ? L"跟随恢复" : L"不跟随恢复";
+        result.message = remembered ? util::i18n::Text(L"跟随恢复")
+                               : util::i18n::Text(L"不跟随恢复");
     }
 
     return result;
@@ -686,11 +667,11 @@ std::optional<std::filesystem::path> PickImageFile(HWND owner, std::wstring_view
     }
 
     const COMDLG_FILTERSPEC filters[] = {
-        { L"图片", L"*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff" },
-        { L"所有文件", L"*.*" },
+        { util::i18n::Cstr(L"图片"), L"*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff" },
+        { util::i18n::Cstr(L"所有文件"), L"*.*" },
     };
     dialog->SetFileTypes(ARRAYSIZE(filters), filters);
-    const std::wstring caption{ title };
+    const std::wstring caption{ util::i18n::Text(title) };
     dialog->SetTitle(caption.c_str());
 
     FILEOPENDIALOGOPTIONS options{};

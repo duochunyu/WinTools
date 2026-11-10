@@ -14,6 +14,7 @@
 #include "core/layout_math.h"
 #include "core/layout_store.h"
 #include "core/window_enum.h"
+#include "util/i18n.h"
 #include "util/log.h"
 #include "util/path.h"
 
@@ -37,17 +38,17 @@ const wchar_t* PositionName(core::WallpaperPosition position)
     switch (position)
     {
         case core::WallpaperPosition::Center:
-            return L"Center(居中)";
+            return util::i18n::Cstr(L"Center(居中)");
         case core::WallpaperPosition::Tile:
-            return L"Tile(平铺)";
+            return util::i18n::Cstr(L"Tile(平铺)");
         case core::WallpaperPosition::Stretch:
-            return L"Stretch(拉伸)";
+            return util::i18n::Cstr(L"Stretch(拉伸)");
         case core::WallpaperPosition::Fit:
-            return L"Fit(适应)";
+            return util::i18n::Cstr(L"Fit(适应)");
         case core::WallpaperPosition::Fill:
-            return L"Fill(填充)";
+            return util::i18n::Cstr(L"Fill(填充)");
         case core::WallpaperPosition::Span:
-            return L"Span(跨屏)";
+            return util::i18n::Cstr(L"Span(跨屏)");
     }
 
     return L"unknown";
@@ -167,7 +168,8 @@ int RunDump(const std::filesystem::path& image)
             L"  ({:>5},{:>5}) {:>5}x{:<5}  src ({},{}) {}x{}  canvas ({},{})  {}",
             monitor.left, monitor.top, monitor.width, monitor.height, slice->sourceX, slice->sourceY,
             slice->sourceWidth, slice->sourceHeight, slice->canvasX, slice->canvasY,
-            slice->unscaled ? L"1:1 直拷" : L"需重采样");
+            slice->unscaled ? util::i18n::Cstr(L"1:1 直拷")
+                            : util::i18n::Cstr(L"需重采样"));
     }
 
     return allOk ? kSuccess : kRuntimeFailure;
@@ -182,14 +184,14 @@ int RunSpan(const std::filesystem::path& image, bool dryRun)
         return result.ok ? kSuccess : kRuntimeFailure;
     }
 
-    LogInfo(L"{}", result.message);
+    LogInfo(L"{}", util::i18n::Text(result.message));
     return result.ok ? kSuccess : kRuntimeFailure;
 }
 
 int RunRestore()
 {
     const ActionResult result = RestoreSavedWallpaper();
-    LogInfo(L"{}", result.message);
+    LogInfo(L"{}", util::i18n::Text(result.message));
     return result.ok ? kSuccess : kRuntimeFailure;
 }
 
@@ -214,7 +216,8 @@ int RunWindows()
 
         // The display each window belongs to is what makes per-display restore possible, so it
         // is printed on its own indented line rather than squeezed into the row above.
-        LogInfo(L"        显示器: {}", monitor.empty() ? L"(未知)" : monitor);
+        LogInfo(L"        显示器: {}",
+            monitor.empty() ? std::wstring{ util::i18n::Cstr(L"(未知)") } : monitor);
     }
 
     return kSuccess;
@@ -226,7 +229,7 @@ int RunCapture()
     int monitors = 0;
     const ActionResult result = CaptureCurrentLayout(windows, monitors);
 
-    LogInfo(L"{}", result.message);
+    LogInfo(L"{}", util::i18n::Text(result.message));
     if (result.ok)
     {
         LogInfo(L"布局文件: {}", core::DefaultLayoutFile().wstring());
@@ -240,7 +243,7 @@ int RunApply()
     core::RestoreStats stats{};
     const ActionResult result = RestoreSavedLayout(stats);
 
-    LogInfo(L"{}", result.message);
+    LogInfo(L"{}", util::i18n::Text(result.message));
     return result.ok ? kSuccess : kRuntimeFailure;
 }
 
@@ -257,7 +260,9 @@ int RunShow()
     const LayoutSummary summary = DescribeSavedLayout();
 
     LogInfo(L"布局文件: {}", file.wstring());
-    LogInfo(L"保存时间: {}", summary.savedAt.empty() ? L"(未知)" : summary.savedAt);
+    LogInfo(L"保存时间: {}",
+        summary.savedAt.empty() ? std::wstring{ util::i18n::Cstr(L"(未知)") }
+                                : summary.savedAt);
     LogInfo(L"{} 台显示器 / {} 个窗口", layout->monitors.size(), layout->windows.size());
 
     LogInfo(L"");
@@ -301,7 +306,7 @@ int RunTray(bool showPanel)
     if (!service.Start(showPanel))
     {
         LogError(L"常驻服务启动失败");
-        ::MessageBoxW(nullptr, L"托盘或设置面板创建失败，请查看日志。", L"WinTools",
+        ::MessageBoxW(nullptr, util::i18n::Cstr(L"托盘或设置面板创建失败，请查看日志。"), L"WinTools",
             MB_ICONERROR | MB_OK);
         return kRuntimeFailure;
     }

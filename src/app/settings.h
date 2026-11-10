@@ -49,6 +49,10 @@ struct Settings
     /// group the user was working on.
     int activeGroup{ 0 };
 
+    /// 0 = follow the system UI language, 1 = Simplified Chinese, 2 = English. Mirrors
+    /// util::i18n::Language and is applied once at startup, before the first log line.
+    int language{ 0 };
+
     [[nodiscard]] static Settings Load();
     [[nodiscard]] bool Save() const;
 

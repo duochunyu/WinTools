@@ -60,6 +60,7 @@ add_library(wintools_core STATIC
     src/core/display_watcher.cpp
     src/platform/win/com.cpp
     src/platform/win/wic.cpp
+    src/util/i18n.cpp
     src/util/log.cpp
     src/util/path.cpp
     src/util/text.cpp
@@ -110,6 +111,7 @@ add_executable(wintools_tests
     tests/layout_store_test.cpp
     tests/wallpaper_store_test.cpp
     tests/group_test.cpp
+    tests/i18n_test.cpp
     tests/piece_cache_test.cpp
     tests/preview_test.cpp
     tests/panel_view_test.cpp

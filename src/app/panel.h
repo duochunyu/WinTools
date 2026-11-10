@@ -58,6 +58,10 @@ enum class PanelAction
     /// not a setting.
     CycleTheme,
 
+    /// Follow system -> Simplified Chinese -> English. Applied immediately; the panel is
+    /// refreshed so every label is measured again in the new language.
+    CycleLanguage,
+
     /// Open the log file in whatever the system uses for text.
     OpenLog,
 

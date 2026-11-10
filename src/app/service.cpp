@@ -12,6 +12,7 @@
 #include "core/desktop_wallpaper.h"
 #include "core/layout_math.h"
 #include "core/wallpaper_store.h"
+#include "util/i18n.h"
 #include "util/log.h"
 #include "util/path.h"
 
@@ -344,19 +345,19 @@ void Service::ShowTrayMenu()
         return;
     }
 
-    ::AppendMenuW(menu, MF_STRING, kMenuOpen, L"面板");
+    ::AppendMenuW(menu, MF_STRING, kMenuOpen, util::i18n::Cstr(L"面板"));
     ::SetMenuDefaultItem(menu, kMenuOpen, FALSE);
 
     ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    ::AppendMenuW(menu, MF_STRING, kMenuCapture, L"刷新布局");
-    ::AppendMenuW(menu, MF_STRING, kMenuApply, L"恢复布局");
+    ::AppendMenuW(menu, MF_STRING, kMenuCapture, util::i18n::Cstr(L"刷新布局"));
+    ::AppendMenuW(menu, MF_STRING, kMenuApply, util::i18n::Cstr(L"恢复布局"));
 
     ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    ::AppendMenuW(menu, MF_STRING, kMenuWallpaper, L"更换壁纸");
-    ::AppendMenuW(menu, MF_STRING, kMenuRestoreWallpaper, L"还原壁纸");
+    ::AppendMenuW(menu, MF_STRING, kMenuWallpaper, util::i18n::Cstr(L"更换壁纸"));
+    ::AppendMenuW(menu, MF_STRING, kMenuRestoreWallpaper, util::i18n::Cstr(L"还原壁纸"));
 
     ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    ::AppendMenuW(menu, MF_STRING, kMenuQuit, L"退出");
+    ::AppendMenuW(menu, MF_STRING, kMenuQuit, util::i18n::Cstr(L"退出"));
 
     POINT cursor{};
     ::GetCursorPos(&cursor);
@@ -562,7 +563,8 @@ void Service::HandleAction(const PanelRequest& request)
             const std::wstring label = core::GroupLabel(group, core::CaptureMonitors());
 
             const auto chosen =
-                PickImageFile(m_panel.Handle(), L"选择「" + label + L"」的壁纸");
+                PickImageFile(m_panel.Handle(),
+                    util::i18n::Format(L"选择「{}」的壁纸", label));
             if (!chosen.has_value())
             {
                 return;
@@ -682,7 +684,7 @@ void Service::HandleAction(const PanelRequest& request)
             const core::Group& group = m_groups[static_cast<size_t>(m_activeSlot)];
             const std::wstring label =
                 core::GroupLabel(group, core::CaptureMonitors());
-            SetStatus(std::format(L"已选中 {}：更换壁纸 / 应用壁纸都以它为准", label));
+            SetStatus(util::i18n::Format(L"已选中 {}：更换壁纸 / 应用壁纸都以它为准", label));
             return;
         }
 
@@ -729,11 +731,11 @@ void Service::HandleAction(const PanelRequest& request)
 
             if (request.index < 0)
             {
-                SetStatus(std::format(L"已单独成组 {}（{} 台）", label, screens));
+                SetStatus(util::i18n::Format(L"已单独成组 {}（{} 台）", label, screens));
             }
             else
             {
-                SetStatus(std::format(L"已加入 {}（{} 台）", label, screens));
+                SetStatus(util::i18n::Format(L"已加入 {}（{} 台）", label, screens));
             }
 
             return;
@@ -746,6 +748,16 @@ void Service::HandleAction(const PanelRequest& request)
             SetStatus(m_settings.theme == 0 ? L"主题：浅色"
                     : m_settings.theme == 1 ? L"主题：深色"
                                             : L"主题：跟随系统");
+            return;
+        }
+
+        case PanelAction::CycleLanguage:
+        {
+            m_settings.language = (std::clamp(m_settings.language, 0, 2) + 1) % 3;
+            (void)m_settings.Save();
+            util::i18n::SetLanguage(static_cast<util::i18n::Language>(m_settings.language));
+            // SetStatus refreshes the panel, which re-measures every label in the new language.
+            SetStatus(std::wstring{ util::i18n::LanguageLabel() });
             return;
         }
 
@@ -792,7 +804,7 @@ void Service::OnDisplaysSettled(bool isRetry)
 
         report = result.message;
         LogInfo(L"automatic restore after display change: {} ({} displays attached)",
-            result.message, core::CaptureMonitors().size());
+            util::i18n::Text(result.message), core::CaptureMonitors().size());
 
         // A resume does not hand over a finished desktop: the displays come back one at a time and
         // the shell is still starting, so the first attempt can find a topology that is not the
@@ -820,12 +832,12 @@ void Service::OnDisplaysSettled(bool isRetry)
         return;
     }
 
-    SetStatus(L"显示器变化：" + report);
+    SetStatus(util::i18n::Format(L"显示器变化：{}", report));
 
     // Only when nobody is looking at the panel: a balloon over an open window is noise.
     if (m_panel.Handle() != nullptr && !::IsWindowVisible(m_panel.Handle()))
     {
-        m_tray.ShowInfo(L"WinTools", report);
+        m_tray.ShowInfo(L"WinTools", util::i18n::Text(report));
     }
 }
 
@@ -854,7 +866,9 @@ void Service::SetStatus(std::wstring text, bool isError)
 void Service::SyncTrayTooltip()
 {
     // No dangling separator when there is nothing to report.
-    m_tray.SetTooltip(m_status.empty() ? std::wstring{ L"WinTools" } : L"WinTools · " + m_status);
+    m_tray.SetTooltip(m_status.empty()
+            ? std::wstring{ L"WinTools" }
+            : L"WinTools · " + std::wstring{ util::i18n::Text(m_status) });
 }
 
 PanelState Service::ReadState()

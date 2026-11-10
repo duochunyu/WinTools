@@ -6,6 +6,7 @@
 #include <format>
 #include <unordered_map>
 
+#include "util/i18n.h"
 #include "util/log.h"
 #include "core/window_enum.h"
 
@@ -141,13 +142,13 @@ std::wstring DescribeDock(const DockMode mode, int splitPermille)
         case DockMode::Position:
             return L"原位置";
         case DockMode::Left:
-            return exactHalf ? L"左半屏" : std::format(L"左侧 {}%", percent);
+            return exactHalf ? L"左半屏" : util::i18n::Format(L"左侧 {}%", percent);
         case DockMode::Right:
-            return exactHalf ? L"右半屏" : std::format(L"右侧 {}%", percent);
+            return exactHalf ? L"右半屏" : util::i18n::Format(L"右侧 {}%", percent);
         case DockMode::Top:
-            return exactHalf ? L"上半屏" : std::format(L"上侧 {}%", percent);
+            return exactHalf ? L"上半屏" : util::i18n::Format(L"上侧 {}%", percent);
         case DockMode::Bottom:
-            return exactHalf ? L"下半屏" : std::format(L"下侧 {}%", percent);
+            return exactHalf ? L"下半屏" : util::i18n::Format(L"下侧 {}%", percent);
         case DockMode::Maximize:
             return L"最大化";
         case DockMode::Fill:

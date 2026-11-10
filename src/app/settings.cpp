@@ -24,6 +24,7 @@ constexpr wchar_t kKeyDebounce[] = L"layout.debounceSeconds=";
 constexpr wchar_t kKeyLastAutoRestore[] = L"layout.lastAutoRestore=";
 constexpr wchar_t kKeyTheme[] = L"theme=";
 constexpr wchar_t kKeyActiveGroup[] = L"wallpaper.activeGroup=";
+constexpr wchar_t kKeyLanguage[] = L"language=";
 
 std::wstring Trim(const std::wstring& text)
 {
@@ -162,6 +163,16 @@ Settings Settings::Load()
             {
             }
         }
+        else if (key == kKeyLanguage)
+        {
+            try
+            {
+                settings.language = std::clamp(std::stoi(value), 0, 2);
+            }
+            catch (...)
+            {
+            }
+        }
     }
 
     // A hand-edited file can put anything in the three framing fields; the renderer refuses
@@ -199,6 +210,7 @@ bool Settings::Save() const
     text += std::format(L"{}{}\n", kKeyLastAutoRestore, lastAutoRestore);
     text += std::format(L"{}{}\n", kKeyTheme, theme);
     text += std::format(L"{}{}\n", kKeyActiveGroup, activeGroup);
+    text += std::format(L"{}{}\n", kKeyLanguage, language);
 
     std::ofstream out(file, std::ios::binary | std::ios::trunc);
     if (!out)

@@ -6,7 +6,9 @@
 
 #include "app/cli.h"
 #include "app/commands.h"
+#include "app/settings.h"
 #include "platform/win/com.h"
+#include "util/i18n.h"
 #include "util/log.h"
 
 namespace
@@ -40,7 +42,8 @@ void AttachParentConsole()
 
 void ReportStartupFailure(std::wstring_view message)
 {
-    ::MessageBoxW(nullptr, std::wstring{ message }.c_str(), L"WinTools", MB_ICONERROR | MB_OK);
+    ::MessageBoxW(nullptr, std::wstring{ wintools::util::i18n::Text(message) }.c_str(),
+        L"WinTools", MB_ICONERROR | MB_OK);
 }
 
 } // namespace
@@ -48,6 +51,12 @@ void ReportStartupFailure(std::wstring_view message)
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 {
     AttachParentConsole();
+
+    // Before the first log line and before any window is created: CLI help, the tray menu and
+    // every text measurement in the panel read the language as soon as they start.
+    const wintools::app::Settings settings = wintools::app::Settings::Load();
+    wintools::util::i18n::SetLanguage(
+        static_cast<wintools::util::i18n::Language>(settings.language));
 
     int argc = 0;
     wchar_t** argv = ::CommandLineToArgvW(::GetCommandLineW(), &argc);

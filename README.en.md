@@ -7,21 +7,25 @@ is unplugged or wakes up.
 
 A single-file executable with a statically linked CRT and no runtime dependencies. It lives in the
 system tray; double-click to open the settings panel. No installer, no writes to Program Files,
-no network access. The panel UI currently ships in Simplified Chinese.
+no network access. The panel, tray menu, status messages, CLI help and log ship in both
+Simplified Chinese and English; the language can follow the system or be pinned in the gear menu.
 
 | | |
 |---|---|
 | OS | Windows 10 1809+ / Windows 11, x64 |
 | Version | v0.1.0 |
-| Binary | 884,224 bytes; imports only 7 system DLLs |
-| Built with | C++23 / Win32 / WIC / custom GDI rendering; no third-party libraries |
-| Tests | 102 unit tests, green in debug and release |
+| Binary | 914,432 bytes; imports only 7 system DLLs |
+| Built with | C++20 / Win32 / WIC / custom GDI rendering; no third-party libraries |
+| Tests | 108 unit tests, green in debug and release |
 
-![WinTools settings panel](docs/panel.png)
+![WinTools settings panel](docs/panel-en.png)
 
 > The real panel at 1025x934. Screenshots use neutral sample data: 3 displays, 2 groups,
 > 7 placeholder windows, and wallpapers drawn specifically for this project. No real window
 > titles, file paths or personal content appear.
+>
+> The Simplified Chinese panel is shown in [panel.png](docs/panel.png) and
+> [panel-demo.gif](docs/panel-demo.gif).
 
 ---
 
@@ -40,6 +44,7 @@ no network access. The panel UI currently ships in Simplified Chinese.
 | Per-window exclusion | The checkbox at the start of each row decides whether a window is remembered; unchecking never deletes the row |
 | Filter by display | Numeric chips in the layout section are multi-select; none selected means all |
 | Themes | Light / dark / follow system, cycled with the `◐` button, saved to disk |
+| UI languages | Simplified Chinese / English; the gear menu cycles Follow system -> Simplified Chinese -> English, and the choice is saved |
 | Status history | The footer keeps the last three results, so a failure is not wiped by the next success |
 | Full keyboard access | Tab focus ring, 1-9 to switch groups, `+ - 0` to zoom/reset, arrow keys to pan, Ctrl+Z to undo a checkbox, Esc to close popups |
 | Tray and autostart | Tray menu: Change Wallpaper / Restore Wallpaper / Refresh Layout / Restore Layout / Quit; optional run at logon |
@@ -69,7 +74,7 @@ exactly one group, and each group has **one image, one framing and one set of me
 Merging display 3 into `1+2`: the outline follows the members and all three displays switch to
 the same wallpaper.
 
-![Group merge demo](docs/panel-demo.gif)
+![Group merge demo](docs/panel-demo-en.gif)
 
 ### 1.3 Arrangement map and framing
 
@@ -164,7 +169,7 @@ main.cpp                      wWinMain; borrows the parent console, then dispatc
     |   +-- display_watcher
     |
     +-- platform/win/         COM RAII, WIC factory
-    +-- util/                 path / text / log
+    +-- util/                 path / text / log / i18n
 ```
 
 Three constraints run through the whole project:
@@ -190,6 +195,8 @@ Three constraints run through the whole project:
 | Custom rendering | Borderless `WS_POPUP`; the entire client area is drawn into a 32bpp DIB; rounded corners are antialiased with a per-pixel distance field |
 | Asynchronous feedback | Long tasks paint a busy frame first, then run on a worker thread and post `WM_APP+4` back to the UI thread |
 | Fault tolerance | COM failures are logged and return false rather than throwing; the log has millisecond timestamps and rotates at 1 MB |
+| Bilingual UI | The Chinese source string is the lookup key; drawing, text measurement, logging, menus and the CLI all resolve through one resource layer. Missing entries fall back to Chinese |
+| Live language switch | Changing the gear-menu setting refreshes immediately; buttons, chips and labels are re-measured in the new language without a restart |
 
 ### 2.3 Group model
 
@@ -266,7 +273,7 @@ All runtime files live in one directory:
 
 ```
 %LOCALAPPDATA%\WinTools\
-├── settings.txt        theme, auto restore, autostart, active group, debounce seconds
+├── settings.txt        theme, UI language, auto restore, autostart, active group, debounce seconds
 ├── groups.tsv          group definitions (primary wallpaper configuration file)
 ├── layout.txt          window layout snapshot
 ├── wallpapers.txt      legacy migration source
@@ -301,12 +308,12 @@ wires up the SDK environment itself. No .NET / Windows App SDK / vcpkg.
 ```bat
 scripts\build.bat                          :: debug
 scripts\build.bat windows-x64-release      :: release
-build\debug\bin\wintools_tests.exe         :: 102 tests
+build\debug\bin\wintools_tests.exe         :: 108 tests
 ```
 
 Output lands in `build\<config>\bin\`; the release `WinTools.exe` can be copied out on its own.
 Test groups: geometry 14, placement/snap 24, layout file 8, per-display wallpaper 8, group model
-17, slice cache 5, preview 3, panel 23.
+17, UI languages 6, slice cache 5, preview 3, panel 23.
 
 ---
 
@@ -318,7 +325,7 @@ WinTools/
 ├── README.md / README.en.md             Simplified Chinese / English
 ├── assets/        wintools.ico, app.rc (version info), app.manifest (Per-Monitor V2)
 ├── scripts/       build, test images, pixel verification, panel capture, click automation
-├── docs/          panel.png screenshot, panel-demo.gif animation
+├── docs/          panel.png / panel-en.png screenshots, panel-demo.gif / panel-demo-en.gif animations
 ├── src/           main / app / core / platform/win / util
 ├── tests/         unit tests
 └── build/         generated output, gitignored
