@@ -1,0 +1,35 @@
+# Build output
+build/
+out/
+*.pdb
+*.ilk
+*.obj
+*.exe
+*.lib
+*.exp
+
+# IDE
+.vs/
+.vscode/
+CMakeUserPresets.json
+*.vcxproj*
+*.sln
+
+# Local scratch
+.tmp/
+scratch/
+.wb_*
+
+# Local-only design specs, post-mortems and dev-process notes.
+# They live in the development repository only - never copy them here.
+docs/*.md
+docs/*.html
+.workbuddy/
+
+# Release packaging output
+dist/
+*.msix
+*.appx
+*.appxbundle
+*.msixbundle
+*.zip
