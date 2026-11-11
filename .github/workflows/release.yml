@@ -1,0 +1,54 @@
+name: Release
+
+# Auto-publish a GitHub Release with the single-file WinTools.exe whenever a tag
+# like v1.2.3 is pushed. The build runs on a Windows runner (VS2022 + Windows
+# SDK + CMake are preinstalled on windows-latest), so scripts/build.bat works
+# unchanged. The workflow computes the SHA-256 and attaches the binary.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build (release)
+        shell: cmd
+        run: scripts\build.bat windows-x64-release
+
+      - name: Compute SHA-256
+        id: sha
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash build/release/bin/WinTools.exe -Algorithm SHA256).Hash
+          "sha256=$hash" | Out-File -Append $env:GITHUB_OUTPUT
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/release/bin/WinTools.exe
+          body: |
+            ## WinTools ${{ github.ref_name }}
+
+            单文件 Windows 桌面效率工具：跨屏壁纸 + 窗口布局，C++/Win32 原生实现，零运行时安装。
+
+            - 双语界面（简体中文 / English），标题栏下拉即时切换
+            - 单文件发布，仅依赖系统 DLL，零运行时安装
+            - 109 个单测，debug / release 双绿
+
+            ### 校验
+            下载 `WinTools.exe` 后请核对 SHA-256：
+
+            ```
+            ${{ steps.sha.outputs.sha256 }}
+            ```
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
