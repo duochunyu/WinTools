@@ -323,6 +323,7 @@ Test groups: geometry 14, placement/snap 24, layout file 8, per-display wallpape
 WinTools/
 ├── CMakeLists.txt / CMakePresets.json   single build entry point, Ninja + cl.exe
 ├── README.md / README.en.md             Simplified Chinese / English
+├── LICENSE        MIT license
 ├── assets/        wintools.ico, app.rc (version info), app.manifest (Per-Monitor V2)
 ├── scripts/       build, test images, pixel verification, panel capture, click automation
 ├── docs/          panel.png / panel-en.png screenshots, panel-demo.gif / panel-demo-en.gif animations
@@ -336,5 +337,5 @@ WinTools/
 ## 6. Version and License
 
 - The binary version resource is `0.1.0.0` (`assets/app.rc`); keep it in sync with the release tag.
-- The repository currently has no LICENSE file, which means "all rights reserved" by default.
-  Add a license before publishing the source.
+- The source is released under the [MIT License](LICENSE): use, modify and redistribute it
+  freely, provided the copyright and permission notices are kept.

@@ -279,6 +279,7 @@ build\debug\bin\wintools_tests.exe         :: 108 个用例
 ```
 WinTools/
 ├── CMakeLists.txt / CMakePresets.json   单一构建入口，Ninja + cl.exe
+├── LICENSE        MIT 许可证
 ├── assets/        wintools.ico、app.rc（版本信息）、app.manifest（Per-Monitor V2）
 ├── scripts/       构建、测试图生成、切片逐像素验证、面板截图、点击自动化、端到端恢复
 ├── docs/          panel.png / panel-en.png 截图，panel-demo.gif / panel-demo-en.gif 演示动图
@@ -292,4 +293,4 @@ WinTools/
 ## 六、版本与许可
 
 - 二进制版本资源为 `0.1.0.0`（`assets/app.rc`），与 Release tag 保持一致。
-- 仓库目前没有 LICENSE 文件，默认「保留所有权利」；若公开源码，发版前需补许可证。
+- 源码采用 [MIT 许可证](LICENSE)，可自由使用、修改与分发，需保留版权与许可声明。
