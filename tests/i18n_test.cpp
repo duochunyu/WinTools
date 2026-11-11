@@ -72,6 +72,24 @@ WINTOOLS_TEST(I18n_FormatKeepsChineseInChineseMode)
         == L"源图小于外接矩形，将被放大 12.0%，边缘可能变糊");
 }
 
+WINTOOLS_TEST(I18n_ShortLabelShowsTheLanguageInUse)
+{
+    {
+        const LanguageScope scope(Language::Chinese);
+        CHECK(wintools::util::i18n::LanguageShortLabel() == L"CN");
+    }
+    {
+        const LanguageScope scope(Language::English);
+        CHECK(wintools::util::i18n::LanguageShortLabel() == L"EN");
+    }
+    {
+        // Auto reports whichever language the system resolves to, not a third caption.
+        const LanguageScope scope(Language::Auto);
+        CHECK(wintools::util::i18n::LanguageShortLabel()
+            == (wintools::util::i18n::IsEnglish() ? L"EN" : L"CN"));
+    }
+}
+
 WINTOOLS_TEST(I18n_LanguageLabelFollowsTheActiveLanguage)
 {
     {

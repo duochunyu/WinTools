@@ -751,9 +751,9 @@ void Service::HandleAction(const PanelRequest& request)
             return;
         }
 
-        case PanelAction::CycleLanguage:
+        case PanelAction::SetLanguage:
         {
-            m_settings.language = (std::clamp(m_settings.language, 0, 2) + 1) % 3;
+            m_settings.language = std::clamp(request.value, 0, 2);
             (void)m_settings.Save();
             util::i18n::SetLanguage(static_cast<util::i18n::Language>(m_settings.language));
             // SetStatus refreshes the panel, which re-measures every label in the new language.

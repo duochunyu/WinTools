@@ -1557,7 +1557,9 @@ Panel::Geometry Panel::ComputeGeometry() const
 
     g.titleBar = { 0, 0, kWidth, kTitleBarHeight };
 
-    // Four 28x26 buttons at the right end, 10 units from the edge.
+    // Five 28x26 buttons at the right end, 10 units from the edge. The fifth is the language
+    // button: it carries a CN / EN short code instead of a glyph, but is otherwise exactly the
+    // same control, so the row stays one set of buttons.
     const int iconSize = 26;
     const int iconWidth = 28;
     const int iconTop = (kTitleBarHeight - iconSize) / 2;
@@ -1569,6 +1571,8 @@ Panel::Geometry Panel::ComputeGeometry() const
     g.iconTheme = { iconRight - iconWidth, iconTop, iconRight, iconTop + iconSize };
     iconRight -= iconWidth;
     g.iconMenu = { iconRight - iconWidth, iconTop, iconRight, iconTop + iconSize };
+    iconRight -= iconWidth;
+    g.iconLanguage = { iconRight - iconWidth, iconTop, iconRight, iconTop + iconSize };
 
     const auto centreIn = [](int top, int height) { return top + (height - kButtonHeight) / 2; };
 
@@ -1804,6 +1808,10 @@ Panel::Target Panel::HitTest(POINT point) const
         return { Hot::PopupItem, -2 };
     }
 
+    if (Contains(g.iconLanguage, point))
+    {
+        return { Hot::IconLanguage, -1 };
+    }
     if (Contains(g.iconMenu, point))
     {
         return { Hot::IconMenu, -1 };
@@ -2282,7 +2290,7 @@ void Panel::PaintTitleBar(HDC dc, const Geometry& geometry)
 
     const int nameWidth = static_cast<int>(MeasureText(m_measure, m_fontTitle, L"WinTools").cx);
     DrawTextBlock(dc, m_fontAux, t.text3,
-        RECT{ nameLeft + nameWidth + 9, 0, geometry.iconMenu.left - 12, kTitleBarHeight },
+        RECT{ nameLeft + nameWidth + 9, 0, geometry.iconLanguage.left - 12, kTitleBarHeight },
         L"跨屏壁纸与窗口布局", DT_LEFT);
 
     FillBox(dc, RECT{ 0, kTitleBarHeight - 1, kWidth, kTitleBarHeight }, t.line);
@@ -2303,6 +2311,20 @@ void Panel::PaintTitleBar(HDC dc, const Geometry& geometry)
     icon(geometry.iconTheme, L"\u25D0", Hot::IconTheme, false);
     icon(geometry.iconHelp, L"?", Hot::IconHelp, false);
     icon(geometry.iconClose, L"\u00D7", Hot::IconClose, true);
+
+    // The fifth button names the language in use (CN / EN) and opens the language dropdown.
+    // It keeps the icons' hover treatment so it reads as one of the same set, not a second
+    // kind of control.
+    {
+        const bool hovered = m_hot == Hot::IconLanguage;
+        const bool pressed = m_pressed == Hot::IconLanguage;
+        if (hovered || pressed)
+        {
+            FillRounded(dc, geometry.iconLanguage, 6, pressed ? t.hover2 : t.hover);
+        }
+        DrawTextBlock(dc, m_fontSmall, (hovered || pressed) ? t.text : t.text2,
+            geometry.iconLanguage, util::i18n::LanguageShortLabel(), DT_CENTER);
+    }
 }
 
 void Panel::PaintWallpaperBlock(HDC dc, const Geometry& geometry)
@@ -3190,9 +3212,21 @@ std::vector<Panel::PopupEntry> Panel::PopupItems() const
             items.push_back(PopupEntry{ .text = L"状态记录", .id = 1, .checked = m_historyOpen });
             items.push_back(PopupEntry{ .separator = true });
             items.push_back(PopupEntry{ .text = L"开机启动", .id = 2, .checked = m_state.autostart });
-            items.push_back(PopupEntry{
-                .text = std::wstring{ util::i18n::LanguageLabel() }, .id = 3 });
             return items;
+
+        case Popup::LanguageMenu:
+        {
+            // id is the value written to settings.txt, so the checked row and the stored mode
+            // cannot drift apart. Text goes through the same translation table as every label.
+            const auto language = util::i18n::CurrentLanguage();
+            items.push_back(PopupEntry{ .text = L"跟随系统", .id = 0,
+                .checked = language == util::i18n::Language::Auto });
+            items.push_back(PopupEntry{ .text = L"简体中文", .id = 1,
+                .checked = language == util::i18n::Language::Chinese });
+            items.push_back(PopupEntry{ .text = L"English", .id = 2,
+                .checked = language == util::i18n::Language::English });
+            return items;
+        }
 
         case Popup::GroupJoin:
         {
@@ -3315,7 +3349,8 @@ RECT Panel::PopupRect(const Geometry& geometry) const
     const std::vector<PopupEntry> items = PopupItems();
     const std::wstring head = PopupHead();
 
-    int width = m_popup == Popup::AppMenu ? 196 : 216;
+    const bool compact = m_popup == Popup::AppMenu || m_popup == Popup::LanguageMenu;
+    int width = compact ? 196 : 216;
     for (const auto& item : items)
     {
         if (item.separator)
@@ -3452,7 +3487,7 @@ void Panel::PaintPopup(HDC dc, const Geometry& geometry)
 
         int textLeft = row.left + 10;
 
-        if (m_popup == Popup::AppMenu)
+        if (m_popup == Popup::AppMenu || m_popup == Popup::LanguageMenu)
         {
             // The check column is always reserved, so labels do not shift when one is ticked.
             if (item.checked)
@@ -3643,6 +3678,7 @@ std::vector<Panel::Target> Panel::FocusRing(const Geometry& geometry) const
 {
     std::vector<Target> ring;
 
+    ring.push_back({ Hot::IconLanguage, -1 });
     ring.push_back({ Hot::IconMenu, -1 });
     ring.push_back({ Hot::IconTheme, -1 });
     ring.push_back({ Hot::IconHelp, -1 });
@@ -3692,6 +3728,8 @@ RECT Panel::RectForTarget(const Geometry& geometry, const Target& target) const
 {
     switch (target.hot)
     {
+        case Hot::IconLanguage:
+            return geometry.iconLanguage;
         case Hot::IconMenu:
             return geometry.iconMenu;
         case Hot::IconTheme:
@@ -3873,12 +3911,13 @@ void Panel::ActivatePopup(int item)
                 case 2:
                     emit(PanelAction::ToggleAutostart);
                     break;
-                case 3:
-                    emit(PanelAction::CycleLanguage);
-                    break;
                 default:
                     break;
             }
+            return;
+
+        case Popup::LanguageMenu:
+            emit(PanelAction::SetLanguage, -1, entry.id);
             return;
 
         case Popup::GroupJoin:
@@ -3937,6 +3976,14 @@ void Panel::Activate(const Target& target)
 
     switch (target.hot)
     {
+        case Hot::IconLanguage:
+        {
+            const Geometry g = ComputeGeometry();
+            OpenPopup(Popup::LanguageMenu,
+                POINT{ g.iconLanguage.right - 196, g.iconLanguage.bottom + 6 }, -1);
+            return;
+        }
+
         case Hot::IconMenu:
         {
             const Geometry g = ComputeGeometry();
@@ -4318,7 +4365,8 @@ LRESULT Panel::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam)
 
             if (design.y < kTitleBarHeight)
             {
-                const bool onIcon = Contains(g.iconMenu, design) || Contains(g.iconTheme, design)
+                const bool onIcon = Contains(g.iconLanguage, design)
+                                 || Contains(g.iconMenu, design) || Contains(g.iconTheme, design)
                                  || Contains(g.iconHelp, design) || Contains(g.iconClose, design);
                 return onIcon ? HTCLIENT : HTCAPTION;
             }

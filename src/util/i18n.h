@@ -44,4 +44,12 @@ template <typename... Args>
 /// Text for the gear-menu language row, already in the active language.
 [[nodiscard]] std::wstring_view LanguageLabel();
 
+/// Compact caption for the title-bar language button: the language actually in use, not the
+/// mode used to choose it. Auto resolves against the system UI language exactly as Text() does,
+/// so a zh-* system reads CN and every other system reads EN while following the system.
+[[nodiscard]] inline std::wstring_view LanguageShortLabel()
+{
+    return IsEnglish() ? L"EN" : L"CN";
+}
+
 } // namespace wintools::util::i18n

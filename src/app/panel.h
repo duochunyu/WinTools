@@ -58,9 +58,10 @@ enum class PanelAction
     /// not a setting.
     CycleTheme,
 
-    /// Follow system -> Simplified Chinese -> English. Applied immediately; the panel is
-    /// refreshed so every label is measured again in the new language.
-    CycleLanguage,
+    /// Pick the UI language from the title-bar dropdown. value is 0 = follow the system,
+    /// 1 = Simplified Chinese, 2 = English. Applied immediately; the panel is refreshed so
+    /// every label is measured again in the new language.
+    SetLanguage,
 
     /// Open the log file in whatever the system uses for text.
     OpenLog,
@@ -334,6 +335,7 @@ private:
     enum class Hot
     {
         None,
+        IconLanguage,
         IconMenu,
         IconTheme,
         IconHelp,
@@ -381,6 +383,7 @@ private:
     struct Geometry
     {
         RECT titleBar{};
+        RECT iconLanguage{};
         RECT iconMenu{};
         RECT iconTheme{};
         RECT iconHelp{};
@@ -605,6 +608,7 @@ private:
     {
         None,
         AppMenu,
+        LanguageMenu, // anchored at the title-bar language button
         GroupJoin,  // anchored at a screen number
         GroupMerge, // anchored at the active chip's plus
     };

@@ -8,15 +8,15 @@ is unplugged or wakes up.
 A single-file executable with a statically linked CRT and no runtime dependencies. It lives in the
 system tray; double-click to open the settings panel. No installer, no writes to Program Files,
 no network access. The panel, tray menu, status messages, CLI help and log ship in both
-Simplified Chinese and English; the language can follow the system or be pinned in the gear menu.
+Simplified Chinese and English; the language can follow the system or be pinned from the title-bar dropdown.
 
 | | |
 |---|---|
 | OS | Windows 10 1809+ / Windows 11, x64 |
 | Version | v0.1.0 |
-| Binary | 914,432 bytes; imports only 7 system DLLs |
+| Binary | 915,456 bytes; imports only 7 system DLLs |
 | Built with | C++20 / Win32 / WIC / custom GDI rendering; no third-party libraries |
-| Tests | 108 unit tests, green in debug and release |
+| Tests | 109 unit tests, green in debug and release |
 
 ![WinTools settings panel](docs/panel-en.png)
 
@@ -44,7 +44,7 @@ Simplified Chinese and English; the language can follow the system or be pinned 
 | Per-window exclusion | The checkbox at the start of each row decides whether a window is remembered; unchecking never deletes the row |
 | Filter by display | Numeric chips in the layout section are multi-select; none selected means all |
 | Themes | Light / dark / follow system, cycled with the `◐` button, saved to disk |
-| UI languages | Simplified Chinese / English; the gear menu cycles Follow system -> Simplified Chinese -> English, and the choice is saved |
+| UI languages | Simplified Chinese / English; the title-bar CN / EN button opens a dropdown with Follow system, Simplified Chinese and English. The choice is saved |
 | Status history | The footer keeps the last three results, so a failure is not wiped by the next success |
 | Full keyboard access | Tab focus ring, 1-9 to switch groups, `+ - 0` to zoom/reset, arrow keys to pan, Ctrl+Z to undo a checkbox, Esc to close popups |
 | Tray and autostart | Tray menu: Change Wallpaper / Restore Wallpaper / Refresh Layout / Restore Layout / Quit; optional run at logon |
@@ -196,7 +196,7 @@ Three constraints run through the whole project:
 | Asynchronous feedback | Long tasks paint a busy frame first, then run on a worker thread and post `WM_APP+4` back to the UI thread |
 | Fault tolerance | COM failures are logged and return false rather than throwing; the log has millisecond timestamps and rotates at 1 MB |
 | Bilingual UI | The Chinese source string is the lookup key; drawing, text measurement, logging, menus and the CLI all resolve through one resource layer. Missing entries fall back to Chinese |
-| Live language switch | Changing the gear-menu setting refreshes immediately; buttons, chips and labels are re-measured in the new language without a restart |
+| Live language switch | Picking a language refreshes immediately; buttons, chips and labels are re-measured in the new language without a restart |
 
 ### 2.3 Group model
 
@@ -308,12 +308,12 @@ wires up the SDK environment itself. No .NET / Windows App SDK / vcpkg.
 ```bat
 scripts\build.bat                          :: debug
 scripts\build.bat windows-x64-release      :: release
-build\debug\bin\wintools_tests.exe         :: 108 tests
+build\debug\bin\wintools_tests.exe         :: 109 tests
 ```
 
 Output lands in `build\<config>\bin\`; the release `WinTools.exe` can be copied out on its own.
 Test groups: geometry 14, placement/snap 24, layout file 8, per-display wallpaper 8, group model
-17, UI languages 6, slice cache 5, preview 3, panel 23.
+17, UI languages 7, slice cache 5, preview 3, panel 23.
 
 ---
 
