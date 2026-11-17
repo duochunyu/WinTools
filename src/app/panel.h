@@ -8,9 +8,12 @@
 #include <string_view>
 #include <vector>
 
+#include "core/canvas.h"
 #include "core/composer.h"
 #include "core/group.h"
+#include "core/hotkeys.h"
 #include "core/layout_math.h"
+#include "core/note_archive.h"
 #include "core/window_layout.h"
 
 namespace wintools::app
@@ -66,6 +69,32 @@ enum class PanelAction
     /// Open the log file in whatever the system uses for text.
     OpenLog,
 
+    /// Show or hide the desktop calendar widget.
+    ToggleCanvas,
+
+    /// Reopen one closed note from the archive. The id is in `target`.
+    ReopenNote,
+
+    /// Permanently delete one archived note. The id is in `target`.
+    ForgetNote,
+
+    /// Bind one shortcut to the combination in `index` (low word = modifiers, high = vk),
+    /// or clear it when vk is 0. `value` is the HotkeyAction.
+    SetHotkey,
+
+    /// Put both shortcuts back to their defaults.
+    ResetHotkeys,
+
+    /// Temporarily give up the global hotkeys so their combinations can be recorded. Without this,
+    /// pressing the old Ctrl+Alt+N while rebinding would fire the action instead of reaching the
+    /// panel's key handler.
+    SuspendHotkeys,
+    ResumeHotkeys,
+
+    /// The calendar was dragged to a new spot in the arrangement map. x/y are the new top-left in
+    /// virtual-desktop pixels; the size is unchanged.
+    MoveCanvas,
+
     Quit,
 };
 
@@ -79,6 +108,12 @@ struct PanelRequest
     int index{ -1 };
     int value{};
     core::WallpaperView view{};
+
+    /// Screen position for actions that move something. Only MoveCanvas reads them today; they
+    /// exist as a pair rather than being packed into `index`/`value` because a packed coordinate
+    /// is the kind of encoding that later gets unpacked in the wrong order.
+    int x{};
+    int y{};
 
     /// Device path of the display a per-display action is aimed at; empty for the rest.
     ///
@@ -132,12 +167,22 @@ struct PanelState
     /// The saved layout's windows, in capture order.
     std::vector<WindowRow> windows;
 
+    /// Closed sticky notes that can be reopened, newest first.
+    std::vector<core::ArchiveRecord> archivedNotes;
+
+    /// Global shortcuts, indexed by HotkeyAction - 1.
+    core::Hotkeys hotkeys;
+
     /// "11-07 16:26" - when the layout file was last written. Empty when there is none.
     std::wstring snapshotAt;
 
     bool autoLayout{ true };
     bool autostart{};
     bool darkTheme{};
+
+    /// The desktop calendar: up or down, and where its square is on the virtual desktop.
+    bool canvasOn{};
+    core::CanvasRect canvas{};
 
     /// A long action is running: buttons show a spinner, the status dot turns amber.
     bool busy{};
@@ -352,6 +397,10 @@ private:
         RowBody,
         ScreenBadge, // index = monitor index
         MapBody,
+        CanvasSwitch,
+        CanvasBody,
+        ArchiveRestore, // index = row in m_state.archivedNotes
+        ArchiveForget,  // index = row in m_state.archivedNotes
         Quit,
         PopupItem,   // index = item within the open popup
         ModalButton, // index = button within the open modal
@@ -397,6 +446,7 @@ private:
         RECT zoomBadge{};
         RECT dirtyBadge{};
         RECT groupMeta{};
+        RECT canvasSwitch{};
 
         RECT mapCard{};
         RECT mapArea{};
@@ -423,6 +473,14 @@ private:
         RECT quit{};
 
         RECT history{};
+
+        /// Closed-note history block. Empty when there is nothing archived. Rows carry the same
+        /// index as m_state.archivedNotes; the two buttons hit-test separately from the row.
+        RECT archiveCard{};
+        RECT archiveHead{};
+        std::vector<RECT> archiveRows;
+        std::vector<RECT> archiveRestore;
+        std::vector<RECT> archiveForget;
 
         /// One entry per group that has an attached member, in chip order.
         std::vector<RECT> groupChips;
@@ -500,6 +558,7 @@ private:
     void PaintScrollbar(HDC dc, const Geometry& geometry);
     void PaintFooter(HDC dc, const Geometry& geometry);
     void PaintHistory(HDC dc, const Geometry& geometry);
+    void PaintArchive(HDC dc, const Geometry& geometry);
     void PaintOverlays(HDC dc, const Geometry& geometry);
     void PaintPopup(HDC dc, const Geometry& geometry);
     void PaintModal(HDC dc, const Geometry& geometry);
@@ -510,6 +569,12 @@ private:
         const std::vector<core::MonitorSnapshot>& monitors, size_t index) const;
 
     [[nodiscard]] RECT GroupBoxOnMap(const MapLayout& map, const core::Group& group) const;
+
+    /// The calendar square as it should be drawn right now: the dragged position while a drag is
+    /// in progress, the model's position otherwise.
+    [[nodiscard]] core::CanvasRect ShownCanvas() const;
+
+    [[nodiscard]] RECT CanvasRectOnMap(const MapLayout& map) const;
 
     /// The number badge of a screen: 4 units in from the top-left corner.
     ///
@@ -592,6 +657,14 @@ private:
     POINT m_panOrigin{};
     core::WallpaperView m_panStart{};
 
+    /// Calendar drag: a move gesture, not a resize. The new position is committed on release so
+    /// the settings file is not rewritten once per mouse move.
+    bool m_draggingCanvas{};
+    POINT m_canvasGrab{};
+    core::CanvasRect m_canvasStart{};
+    bool m_canvasLive{};
+    core::CanvasRect m_canvasDrag{};
+
     /// A wheel zoom is committed to the model on a short idle instead of on every event.
     static constexpr UINT_PTR kZoomCommitTimer = 1;
     static constexpr UINT kZoomCommitDelayMs = 150;
@@ -609,6 +682,7 @@ private:
         None,
         AppMenu,
         LanguageMenu, // anchored at the title-bar language button
+        HotkeyMenu,   // anchored at the gear; rows rebind shortcuts on a key press
         GroupJoin,  // anchored at a screen number
         GroupMerge, // anchored at the active chip's plus
     };
@@ -617,6 +691,10 @@ private:
     int m_popupIndex{ -1 }; // monitor index, for the screen the group menu belongs to
     POINT m_popupAt{};
     int m_popupItem{ -1 };
+
+    /// Which shortcut row is waiting for a key press while HotkeyMenu is open. -1 means the menu
+    /// is idle; 1 / 2 are HotkeyAction values, matching the popup item ids.
+    int m_recordingAction{ -1 };
 
     enum class Modal
     {
@@ -655,7 +733,9 @@ private:
     void ActivateModal(int button);
 
     void OpenPopup(Popup kind, POINT anchor, int index);
-    void ClosePopup();
+    // A hotkey row is activated by closing the menu first. That must not re-arm the global
+    // combinations: the key about to be recorded may be one of them.
+    void ClosePopup(bool keepHotkeysSuspended = false);
 
     /// Turns one screen number on or off in the filter. An empty filter means "all".
     void ToggleFilter(int monitorIndex);

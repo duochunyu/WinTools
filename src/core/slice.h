@@ -25,6 +25,12 @@ struct Rect
     {
         return width > 0 && height > 0;
     }
+
+    [[nodiscard]] bool operator==(const Rect& other) const
+    {
+        return left == other.left && top == other.top && width == other.width
+            && height == other.height;
+    }
 };
 
 /// One monitor's piece of a spanning image: which rectangle of the source image it comes from,

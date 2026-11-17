@@ -16,7 +16,7 @@ Simplified Chinese and English; the language can follow the system or be pinned 
 | Version | v0.1.0 |
 | Binary | 915,456 bytes; imports only 7 system DLLs |
 | Built with | C++20 / Win32 / WIC / custom GDI rendering; no third-party libraries |
-| Tests | 109 unit tests, green in debug and release |
+| Tests | 167 unit tests, green in debug and release |
 
 ![WinTools settings panel](docs/panel-en.png)
 
@@ -47,7 +47,9 @@ Simplified Chinese and English; the language can follow the system or be pinned 
 | UI languages | Simplified Chinese / English; the title-bar CN / EN button opens a dropdown with Follow system, Simplified Chinese and English. The choice is saved |
 | Status history | The footer keeps the last three results, so a failure is not wiped by the next success |
 | Full keyboard access | Tab focus ring, 1-9 to switch groups, `+ - 0` to zoom/reset, arrow keys to pan, Ctrl+Z to undo a checkbox, Esc to close popups |
-| Tray and autostart | Tray menu: Change Wallpaper / Restore Wallpaper / Refresh Layout / Restore Layout / Quit; optional run at logon |
+| Desktop calendar | A yin-yang perpetual calendar above the wallpaper: lunar date, solar term and almanac rings, plus a 10 Hz sweeping clock |
+| Sticky notes | Always-on-top notes: remembered position and size, six muted paper colours, a bare sheet with one line of save time and a page-edge rule at rest (three icons on hover), 0.7 s debounced autosave, region screenshots pasted into the text and draggable afterwards, closed notes recoverable from panel history, visual global hotkey configuration |
+| Tray and autostart | Tray menu: Change Wallpaper / Restore Wallpaper / Refresh Layout / Restore Layout / Desktop Calendar / New Note / Show All Notes / Quit; optional run at logon |
 
 ### 1.2 Groups: which displays share one image
 
@@ -146,6 +148,59 @@ WinTools.exe show                      :: show the saved layout
 WinTools.exe apply                     :: put the windows back
 ```
 
+### 1.7 Desktop calendar
+
+A round widget that sits **above** the wallpaper: a yin-yang hub, a ring of tick marks and four
+text bands (date, lunar date, solar term, almanac), with an analog clock over the hub.
+
+- **It does not take over the desktop.** A real dynamic wallpaper would mean owning WorkerW or
+  `IDesktopWallpaper` and betting on the shell's behaviour. This is an ordinary top-level window
+  that is re-stacked directly above the desktop host window - wallpaper, icons and taskbar are
+  left alone.
+- Position and diameter are set by dragging in the panel preview and persisted; after a display
+  change the widget is clamped back onto a screen.
+- The second hand moves at 10 Hz and stops when another window covers the desktop, leaving the
+  minute hand to carry on (`canvas.sweep=0` disables the sweep for good).
+- Only the hands are drawn per frame: disc, ticks and text bands are rendered once into a cached
+  bitmap that each frame copies wholesale before the three hands go on top.
+
+### 1.8 Sticky notes
+
+A note that stays on top of everything except a fullscreen application.
+
+- Drag the header to move, drag the corner to resize; both are persisted immediately and come back
+  after a restart.
+- **At rest it is a sheet of paper with one line of text and a page-edge rule**: with the pointer
+  outside and the caret elsewhere there is no bar and no buttons. When the pointer arrives or typing
+  starts, three icons (paper colour, screenshot, close) appear straight on the paper in the
+  top-right corner, with no plate behind them. Unsaved edits turn both the time and the rule
+  terracotta. Both states share the same geometry, so nothing jumps.
+- Six muted papers (warm yellow, peach, mint, misty blue, lavender, warm grey). New notes walk the
+  palette in order and the dot in the chip changes it. The colour lives in the index; switching it
+  never touches a byte of the body.
+- Paper all round: the body starts below the time line and stops half a header height above the
+  bottom edge, so the last line never runs into the paper's edge.
+- The body is rich text: whatever formatting arrives with a paste is kept, and pictures are stored
+  with it. Line spacing is 1.5, and the side margins are wider than the text needs.
+- A picture is one character in that text: drag it to move it, the text around the drop point
+  reflows, and Ctrl+Z takes the move back (two steps).
+- Autosave 0.7 s after the last edit, plus one more save when focus leaves and one on close. The
+  corner always shows `MM-DD HH:MM:SS`, taken from the body file's real write time rather than the
+  moment the note was opened; **unsaved is that same line in terracotta**, with no extra word.
+- "Shot" starts a region selection: the screen freezes, everything outside the region darkens, and
+  releasing pastes that region at the caret, scaled down to the note width. A picture always
+  starts a fresh line: RichEdit reserves the picture's size where it lands and then draws it on
+  the following line, so without a soft break a blank band is left behind.
+- The scrollbar is a hand-drawn 3 px thumb (RichEdit's own bar is moved outside the client area),
+  accurate to the pixel; an empty note shows one line of muted placeholder text.
+- Closed notes move to the panel history: preview, paper colour and close time are shown, and a note
+  can be reopened with its body intact or forgotten for good.
+- Global hotkeys are configured in the panel's gear menu: pick "New Note" or "Region Capture",
+  press a combination, and it is saved. Defaults are `Ctrl+Alt+N` / `Ctrl+Alt+S`; a binding can be
+  cleared or reset. The capture hotkey has no note context, so its selection is saved as a PNG in
+  `Pictures\WinTools`.
+- The tray menu offers New Note and Show All Notes.
+
 ---
 
 ## 2. Architecture
@@ -160,12 +215,16 @@ main.cpp                      wWinMain; borrows the parent console, then dispatc
     |   +-- actions           user actions (span / restore / capture / apply / regroup)
     |   +-- service           resident service: tray, display watcher, state machine, persistence
     |   +-- panel             owner-drawn settings panel (no child controls)
+    |   +-- desktop_canvas    calendar widget (layered window, one blit per frame)
+    |   +-- note / note_palette / note_manager / capture   note window, note collection, region capture
     |   +-- tray / settings / startup
     |
     +-- core/                 pure business logic, no UI dependency
     |   +-- group             group model and groups.tsv
     |   +-- layout_math / composer / desktop_wallpaper / state / slice
     |   +-- window_enum / window_layout / layout_store
+    |   +-- canvas / calendar_face          widget geometry and calendar text
+    |   +-- note_layout / note_store / note_theme        note placement, index and body files
     |   +-- display_watcher
     |
     +-- platform/win/         COM RAII, WIC factory
@@ -197,6 +256,8 @@ Three constraints run through the whole project:
 | Fault tolerance | COM failures are logged and return false rather than throwing; the log has millisecond timestamps and rotates at 1 MB |
 | Bilingual UI | The Chinese source string is the lookup key; drawing, text measurement, logging, menus and the CLI all resolve through one resource layer. Missing entries fall back to Chinese |
 | Live language switch | Picking a language refreshes immediately; buttons, chips and labels are re-measured in the new language without a restart |
+| The widget is just a window | The calendar never owns the desktop; it re-asserts one idempotent rule - sit directly above the desktop host - every 400 ms |
+| Bodies stored untouched | Note bodies go in and out as the exact RTF bytes RichEdit produced, never reinterpreted as UTF-8, so Chinese text and pictures survive |
 
 ### 2.3 Group model
 
@@ -278,9 +339,14 @@ All runtime files live in one directory:
 ├── layout.txt          window layout snapshot
 ├── wallpapers.txt      legacy migration source
 ├── WinTools.log        diagnostic log
-└── wallpaper\
-    ├── state.txt       wallpaper state from before the change
-    └── pieces\         one slice per display; the filename carries the geometry
+├── wallpaper\
+│   ├── state.txt       wallpaper state from before the change
+│   └── pieces\         one slice per display; the filename carries the geometry
+└── notes\
+    ├── index.txt       note index: id, position, size and paper colour
+    ├── archive.txt     closed notes: id, position, preview and close time
+    ├── <id>.rtf        body
+    └── <id>.deleted.rtf  retired body; reopening from history renames it back
 ```
 
 Autostart writes the `WinTools` value under
@@ -308,12 +374,13 @@ wires up the SDK environment itself. No .NET / Windows App SDK / vcpkg.
 ```bat
 scripts\build.bat                          :: debug
 scripts\build.bat windows-x64-release      :: release
-build\debug\bin\wintools_tests.exe         :: 109 tests
+build\debug\bin\wintools_tests.exe         :: 167 tests
 ```
 
 Output lands in `build\<config>\bin\`; the release `WinTools.exe` can be copied out on its own.
 Test groups: geometry 14, placement/snap 24, layout file 8, per-display wallpaper 8, group model
-17, UI languages 7, slice cache 5, preview 3, panel 23.
+17, UI languages 7, slice cache 5, preview 3, panel 23, lunar calendar 7, canvas 7,
+sticky notes 44.
 
 ---
 

@@ -3,6 +3,8 @@
 #include <filesystem>
 #include <string>
 
+#include "core/canvas.h"
+#include "core/hotkeys.h"
 #include "core/layout_math.h"
 
 namespace wintools::app
@@ -52,6 +54,20 @@ struct Settings
     /// 0 = follow the system UI language, 1 = Simplified Chinese, 2 = English. Mirrors
     /// util::i18n::Language and is applied once at startup, before the first log line.
     int language{ 0 };
+
+    /// The desktop calendar: whether it is up, and where its square sits in virtual-desktop
+    /// pixels. Stored here rather than in a file of its own because it is one widget, and a
+    /// second file for three numbers would be a second thing to keep in sync.
+    bool canvasEnabled{};
+    core::CanvasRect canvas{};
+
+    /// Whether the widget's second hand sweeps or steps. Sweeping costs about twenty-five tiny
+    /// frames a second; stepping costs one, and is what a quartz watch does. Defaults to the
+    /// former because a desktop clock that jerks looks broken to most people.
+    bool canvasSweep{ true };
+
+    /// Global shortcuts. Defaults are Ctrl+Alt+N (new note) and Ctrl+Alt+S (area capture).
+    core::Hotkeys hotkeys{ core::DefaultHotkeys() };
 
     [[nodiscard]] static Settings Load();
     [[nodiscard]] bool Save() const;

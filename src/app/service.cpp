@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "app/actions.h"
+#include "app/capture.h"
 #include "app/startup.h"
 #include "core/desktop_wallpaper.h"
 #include "core/layout_math.h"
@@ -36,6 +37,9 @@ enum MenuId : UINT
     kMenuApply,
     kMenuWallpaper,
     kMenuRestoreWallpaper,
+    kMenuCanvas,
+    kMenuNewNote,
+    kMenuShowNotes,
     kMenuQuit,
 };
 
@@ -90,6 +94,26 @@ bool ContainsMembers(
     return false;
 }
 
+/// Where the calendar lands the first time it is switched on: top right of the display the cursor
+/// is on, one margin in. Starting at (0, 0) would put it over the icons every time.
+core::CanvasRect DefaultCanvasRect()
+{
+    POINT cursor{};
+    ::GetCursorPos(&cursor);
+
+    MONITORINFO info{};
+    info.cbSize = sizeof(info);
+    if (::GetMonitorInfoW(::MonitorFromPoint(cursor, MONITOR_DEFAULTTOPRIMARY), &info) == FALSE)
+    {
+        return core::CanvasRect{};
+    }
+
+    constexpr int kMargin = 32;
+    const int size = core::kCanvasDefaultSize;
+
+    return core::CanvasRect{ info.rcWork.right - size - kMargin, info.rcWork.top + kMargin, size };
+}
+
 /// Cursor feedback for operations that block the message loop for a moment.
 class WaitCursor
 {
@@ -119,6 +143,10 @@ Service::Service(HINSTANCE instance, HICON icon)
     , m_panel([this](const PanelRequest& request) { HandleAction(request); },
           [this] { return ReadState(); })
 {
+    // A note can be closed straight from its own title bar, with the panel nowhere in the loop.
+    // This is how the panel's closed-note block learns about it without the manager knowing about
+    // the panel.
+    m_notes.archiveChanged = [this] { m_panel.Refresh(); };
 }
 
 Service::~Service()
@@ -136,6 +164,7 @@ Service::~Service()
 
     if (m_window != nullptr)
     {
+        UnregisterHotkeys();
         ::DestroyWindow(m_window);
         m_window = nullptr;
     }
@@ -167,7 +196,43 @@ bool Service::CreateHostWindow()
 
     // Explorer broadcasts this when the taskbar is rebuilt; every tray icon has to be re-added.
     m_taskbarCreated = ::RegisterWindowMessageW(L"TaskbarCreated");
+    RegisterHotkeys();
     return true;
+}
+
+void Service::UnregisterHotkeys()
+{
+    if (m_window == nullptr)
+    {
+        return;
+    }
+
+    // Unregistering a hotkey that was never registered is harmless, so no need to track which
+    // ones took: the ids are fixed and small.
+    for (const core::HotkeyAction action : core::kHotkeyActions)
+    {
+        ::UnregisterHotKey(m_window, static_cast<int>(action));
+    }
+}
+
+void Service::RegisterHotkeys()
+{
+    UnregisterHotkeys();
+
+    for (const core::HotkeyAction action : core::kHotkeyActions)
+    {
+        const core::Hotkey& hotkey = m_settings.hotkeys.At(action);
+        if (!hotkey.Bound())
+        {
+            continue;
+        }
+
+        if (!::RegisterHotKey(m_window, static_cast<int>(action), hotkey.modifiers, hotkey.vk))
+        {
+            LogWarn(L"hotkey {} could not be registered: {}", core::HotkeyActionLabel(action),
+                core::DescribeHotkey(hotkey));
+        }
+    }
 }
 
 bool Service::Start(bool showPanel)
@@ -189,6 +254,15 @@ bool Service::Start(bool showPanel)
     }
 
     m_tray.Add(m_window, m_icon, L"WinTools", kTrayMessage);
+
+    // Notes are restored before anything else can cover the screen: they are the one part of the
+    // app that is expected to be exactly where it was left.
+    m_notes.Start(m_instance);
+
+    if (m_settings.canvasEnabled)
+    {
+        (void)StartCanvas();
+    }
 
     m_watcher = std::make_unique<core::DisplayWatcher>(
         [this] { OnDisplaysSettled(); }, m_settings.debounceSeconds * 1000);
@@ -281,6 +355,22 @@ LRESULT Service::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam)
             FinishWork();
             return 0;
 
+        case WM_HOTKEY:
+        {
+            const int id = static_cast<int>(wparam);
+            if (id == static_cast<int>(core::HotkeyAction::NewNote))
+            {
+                m_notes.NewNote();
+            }
+            else if (id == static_cast<int>(core::HotkeyAction::Capture))
+            {
+                const std::wstring saved = SaveRegionToPictures(m_instance);
+                SetStatus(saved.empty() ? util::i18n::Cstr(L"截图已取消") : saved,
+                    false);
+            }
+            return 0;
+        }
+
         case WM_COMMAND:
             switch (LOWORD(wparam))
             {
@@ -304,6 +394,18 @@ LRESULT Service::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam)
                     HandleAction(PanelRequest{ PanelAction::RestoreWallpaper });
                     return 0;
 
+                case kMenuCanvas:
+                    HandleAction(PanelRequest{ PanelAction::ToggleCanvas });
+                    return 0;
+
+                case kMenuNewNote:
+                    m_notes.NewNote();
+                    return 0;
+
+                case kMenuShowNotes:
+                    m_notes.ShowAll();
+                    return 0;
+
                 case kMenuQuit:
                     HandleAction(PanelRequest{ PanelAction::Quit });
                     return 0;
@@ -314,6 +416,7 @@ LRESULT Service::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam)
             break;
 
         case kQuitMessage:
+            m_notes.SaveAll();
             ::PostQuitMessage(0);
             return 0;
 
@@ -355,6 +458,10 @@ void Service::ShowTrayMenu()
     ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     ::AppendMenuW(menu, MF_STRING, kMenuWallpaper, util::i18n::Cstr(L"更换壁纸"));
     ::AppendMenuW(menu, MF_STRING, kMenuRestoreWallpaper, util::i18n::Cstr(L"还原壁纸"));
+    ::AppendMenuW(menu, MF_STRING | (m_settings.canvasEnabled ? MF_CHECKED : 0), kMenuCanvas,
+        util::i18n::Cstr(L"桌面日历"));
+    ::AppendMenuW(menu, MF_STRING, kMenuNewNote, util::i18n::Cstr(L"新建便签"));
+    ::AppendMenuW(menu, MF_STRING, kMenuShowNotes, util::i18n::Cstr(L"显示所有便签"));
 
     ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     ::AppendMenuW(menu, MF_STRING, kMenuQuit, util::i18n::Cstr(L"退出"));
@@ -775,10 +882,184 @@ void Service::HandleAction(const PanelRequest& request)
             return;
         }
 
+        case PanelAction::ToggleCanvas:
+        {
+            if (m_settings.canvasEnabled)
+            {
+                m_settings.canvasEnabled = false;
+                m_canvas.Stop();
+                (void)m_settings.Save();
+                SetStatus(L"桌面日历已隐藏");
+                return;
+            }
+
+            // A settings file written before the widget existed carries no position; the default
+            // lands it on the display the cursor is on rather than in the top-left corner.
+            if (m_settings.canvas.x == 0 && m_settings.canvas.y == 0)
+            {
+                m_settings.canvas = DefaultCanvasRect();
+            }
+
+            m_settings.canvasEnabled = true;
+            (void)m_settings.Save();
+
+            SetStatus(StartCanvas() ? L"桌面日历已显示" : L"桌面日历启动失败，详见日志",
+                !m_canvas.Running());
+            return;
+        }
+
+        case PanelAction::MoveCanvas:
+        {
+            const core::CanvasRect moved = core::ClampCanvas(
+                core::CanvasRect{ request.x, request.y, m_settings.canvas.size },
+                core::CaptureMonitors());
+
+            if (moved == m_settings.canvas)
+            {
+                return;
+            }
+
+            m_settings.canvas = moved;
+            (void)m_settings.Save();
+            m_canvas.SetRect(moved);
+            m_panel.Refresh();
+            return;
+        }
+
+        case PanelAction::ReopenNote:
+        {
+            const bool ok = m_notes.Reopen(request.target);
+            SetStatus(ok ? util::i18n::Cstr(L"便签已恢复") : util::i18n::Cstr(L"便签已不存在"),
+                !ok);
+            if (ok)
+            {
+                m_panel.Refresh();
+            }
+            return;
+        }
+
+        case PanelAction::ForgetNote:
+        {
+            const bool ok = m_notes.Forget(request.target);
+            SetStatus(ok ? util::i18n::Cstr(L"已从历史中删除") : util::i18n::Cstr(L"便签已不存在"),
+                !ok);
+            m_panel.Refresh();
+            return;
+        }
+
+        case PanelAction::SetHotkey:
+        {
+            const int action = request.value;
+            if (action < 1 || action > static_cast<int>(core::kHotkeyActions.size()))
+            {
+                return;
+            }
+
+            core::Hotkey hotkey;
+            hotkey.modifiers = static_cast<unsigned int>(request.index & 0xFFFF);
+            hotkey.vk = static_cast<unsigned int>((request.index >> 16) & 0xFFFF);
+            const core::HotkeyAction changed = static_cast<core::HotkeyAction>(action);
+            m_settings.hotkeys.At(changed) = hotkey;
+
+            // RegisterHotKey keys on the combination, not on our action id: two rows holding the
+            // same combination would leave the second one unregistered. Move the binding rather
+            // than silently accepting a duplicate.
+            if (hotkey.Bound())
+            {
+                for (const core::HotkeyAction other : core::kHotkeyActions)
+                {
+                    if (other == changed)
+                    {
+                        continue;
+                    }
+
+                    const core::Hotkey& taken = m_settings.hotkeys.At(other);
+                    if (taken.Bound() && taken.modifiers == hotkey.modifiers && taken.vk == hotkey.vk)
+                    {
+                        m_settings.hotkeys.At(other) = core::Hotkey{};
+                    }
+                }
+            }
+
+            (void)m_settings.Save();
+            RegisterHotkeys();
+            SetStatus(hotkey.Bound()
+                    ? util::i18n::Format(L"快捷键已设为 {}", core::DescribeHotkey(hotkey))
+                    : util::i18n::Cstr(L"快捷键已清除"));
+            return;
+        }
+
+        case PanelAction::ResetHotkeys:
+            m_settings.hotkeys = core::DefaultHotkeys();
+            (void)m_settings.Save();
+            RegisterHotkeys();
+            SetStatus(util::i18n::Cstr(L"快捷键已恢复默认"));
+            return;
+
+        case PanelAction::SuspendHotkeys:
+            UnregisterHotkeys();
+            return;
+
+        case PanelAction::ResumeHotkeys:
+            RegisterHotkeys();
+            return;
+
         case PanelAction::Quit:
+            m_notes.SaveAll();
             ::PostQuitMessage(0);
             return;
     }
+}
+
+bool Service::StartCanvas()
+{
+    const std::vector<core::MonitorSnapshot> monitors = core::CaptureMonitors();
+    if (monitors.empty())
+    {
+        SetStatus(L"没有检测到显示器", true);
+        return false;
+    }
+
+    m_settings.canvas = core::ClampCanvas(m_settings.canvas, monitors);
+
+    m_canvas.SetSweep(m_settings.canvasSweep);
+
+    if (!m_canvas.Start(m_instance, m_settings.canvas))
+    {
+        LogError(L"the desktop canvas could not be started");
+        return false;
+    }
+
+    return true;
+}
+
+void Service::StopCanvas()
+{
+    m_canvas.Stop();
+}
+
+void Service::SyncCanvas()
+{
+    if (!m_canvas.Running())
+    {
+        return;
+    }
+
+    const std::vector<core::MonitorSnapshot> monitors = core::CaptureMonitors();
+    if (monitors.empty())
+    {
+        return;
+    }
+
+    const core::CanvasRect clamped = core::ClampCanvas(m_settings.canvas, monitors);
+    if (clamped == m_settings.canvas)
+    {
+        return;
+    }
+
+    m_settings.canvas = clamped;
+    (void)m_settings.Save();
+    m_canvas.SetRect(clamped);
 }
 
 void Service::OnDisplaysSettled(bool isRetry)
@@ -788,6 +1069,14 @@ void Service::OnDisplaysSettled(bool isRetry)
     // The arrangement has to follow the hardware: a display that came back is a member of the
     // group it left, and a display that is gone must not keep its group's canvas stretched.
     SyncGroups();
+
+    // Same rule for the calendar: a widget left half off a display that just disappeared is one
+    // the user cannot see and cannot grab again.
+    SyncCanvas();
+
+    // And for the notes, which are worse off: the text below the edge of the screen is text the
+    // user cannot scroll to.
+    m_notes.SyncMonitors(core::CaptureMonitors());
 
     // The wallpaper is deliberately not re-applied here. Re-rendering and re-setting several
     // pieces takes long enough to be felt, it flashes the desktop, and the slice files are already
@@ -885,6 +1174,11 @@ PanelState Service::ReadState()
     state.autostart = IsAutostartEnabled();
     state.darkTheme = DarkTheme();
 
+    // The switch reflects the window, not the setting: a widget that failed to start must not
+    // look switched on.
+    state.canvasOn = m_canvas.Running();
+    state.canvas = m_settings.canvas;
+
     state.busy = m_busy;
     state.busyLabel = m_busyLabel;
 
@@ -892,6 +1186,8 @@ PanelState Service::ReadState()
     state.statusIsError = m_statusIsError;
     state.history.assign(m_history.begin(), m_history.end());
 
+    state.archivedNotes = m_notes.Archived();
+    state.hotkeys = m_settings.hotkeys;
     state.snapshotAt = SavedLayoutTimestamp();
 
     if (const auto saved = LoadSavedLayout(); saved.has_value())

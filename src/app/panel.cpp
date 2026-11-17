@@ -13,6 +13,7 @@
 #include <string_view>
 
 #include "core/monitor.h"
+#include "core/note_theme.h"
 #include "util/i18n.h"
 #include "util/log.h"
 
@@ -91,6 +92,11 @@ constexpr int kButtonPadX = 10;
 /// The three records that keep a failure visible after the next success overwrote the status
 /// line. An error is not removed early; it is only pushed out by three later records.
 constexpr int kHistoryItems = 3;
+
+/// Closed notes shown in the panel. Four keeps the block short enough that adding it does not
+/// push the window list off a 1080p sheet; older notes stay in the archive file either way.
+constexpr int kArchiveRows = 4;
+constexpr int kArchiveRowHeight = 30;
 
 /// The most rows FitSheet will consider, and the fewest it will accept.
 constexpr int kMaxListRows = 12;
@@ -571,6 +577,43 @@ void StrokeBox(HDC dc, const RECT& rect, COLORREF color, int width = 0)
     ::DeleteObject(pen);
 }
 
+/// Disc fill. The calendar widget is round, and a rounded rectangle would read as a different
+/// thing at the scale the map draws it.
+void FillCircle(HDC dc, const RECT& box, COLORREF color)
+{
+    if (box.right <= box.left || box.bottom <= box.top)
+    {
+        return;
+    }
+
+    const HBRUSH brush = ::CreateSolidBrush(color);
+    const HGDIOBJ oldBrush = ::SelectObject(dc, brush);
+    const HGDIOBJ oldPen = ::SelectObject(dc, ::GetStockObject(NULL_PEN));
+
+    ::Ellipse(dc, box.left, box.top, box.right, box.bottom);
+
+    ::SelectObject(dc, oldPen);
+    ::SelectObject(dc, oldBrush);
+    ::DeleteObject(brush);
+}
+
+void StrokeCircle(HDC dc, const RECT& box, COLORREF color, int width = 1)
+{
+    if (box.right <= box.left || box.bottom <= box.top)
+    {
+        return;
+    }
+
+    const HPEN pen = ::CreatePen(PS_SOLID, width, color);
+    const HGDIOBJ oldPen = ::SelectObject(dc, pen);
+    const HGDIOBJ oldBrush = ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
+
+    ::Ellipse(dc, box.left, box.top, box.right, box.bottom);
+
+    ::SelectObject(dc, oldBrush);
+    ::SelectObject(dc, oldPen);
+    ::DeleteObject(pen);
+}
 /// Clips rect to bounds, both in client space.
 [[nodiscard]] RECT Clip(const RECT& rect, const RECT& bounds)
 {
@@ -1649,7 +1692,17 @@ Panel::Geometry Panel::ComputeGeometry() const
     g.wallHint = { left, y, right, y + kHintHeight };
 
     const int metaWidth = static_cast<int>(MeasureText(m_measure, m_fontAux, L"4 台 · 2 组").cx);
-    g.groupMeta = { right - metaWidth, y, right, y + kHintHeight };
+
+    // The calendar switch sits on this row rather than in a block of its own: it is one control,
+    // and a fourth section for it would push the window list past the bottom of a 1080p sheet.
+    // Far right, because everything to its left is read as a label - the count belongs with the
+    // map, not with the switch.
+    const int canvasLabelWidth = static_cast<int>(MeasureText(m_measure, m_fontBody, L"日历").cx);
+    const int canvasSwitchWidth = 30 + 6 + canvasLabelWidth;
+    g.canvasSwitch = { right - canvasSwitchWidth, y, right, y + kHintHeight };
+
+    g.groupMeta = { g.canvasSwitch.left - 12 - metaWidth, y, g.canvasSwitch.left - 12,
+        y + kHintHeight };
 
     int hintRight = g.groupMeta.left - 10;
     if (const core::Group* active = m_state.ActiveGroup();
@@ -1775,6 +1828,32 @@ Panel::Geometry Panel::ComputeGeometry() const
         y += height;
     }
 
+    // --- Closed notes ---
+    // Only takes space when something is archived: a block that says "no closed notes" every time
+    // would push the window list down on every launch for information nobody asked for.
+    if (!m_state.archivedNotes.empty())
+    {
+        y += 10;
+        const int shown = std::min(kArchiveRows, static_cast<int>(m_state.archivedNotes.size()));
+        const int headHeight = 22;
+        const int height = headHeight + shown * kArchiveRowHeight + 8;
+        g.archiveCard = { left, y, right, y + height };
+        g.archiveHead = { left + 12, y + 4, right - 12, y + 4 + headHeight };
+
+        const int restoreWidth = ButtonWidth(m_measure, m_fontAux, L"恢复");
+        const int forgetWidth = ButtonWidth(m_measure, m_fontAux, L"删除");
+        for (int row = 0; row < shown; ++row)
+        {
+            const int top = y + headHeight + row * kArchiveRowHeight;
+            g.archiveRows.push_back({ left + 8, top, right - 8, top + kArchiveRowHeight });
+            g.archiveForget.push_back({ right - 12 - forgetWidth, top + 3, right - 12,
+                top + 3 + kButtonHeight - 8 });
+            g.archiveRestore.push_back({ right - 20 - forgetWidth - restoreWidth, top + 3,
+                right - 20 - forgetWidth, top + 3 + kButtonHeight - 8 });
+        }
+        y += height;
+    }
+
     g.clientHeight = y + kSheetPaddingBottom;
     return g;
 }
@@ -1878,6 +1957,11 @@ Panel::Target Panel::HitTest(POINT point) const
         return { Hot::Quit, -1 };
     }
 
+    if (Contains(g.canvasSwitch, point))
+    {
+        return { Hot::CanvasSwitch, -1 };
+    }
+
     // The number badge is the only route into the group menu, and it sits on top of the map.
     if (Contains(g.mapCard, point))
     {
@@ -1891,6 +1975,17 @@ Panel::Target Panel::HitTest(POINT point) const
             if (Contains(BadgeRect(box, monitor), point))
             {
                 return { Hot::ScreenBadge, monitor };
+            }
+        }
+
+        // The calendar is drawn over the pictures, so it is hit-tested over them too - but before
+        // the map body, which is the wallpaper drag.
+        if (m_state.canvasOn)
+        {
+            const RECT box = CanvasRectOnMap(LayoutMap(g));
+            if (Contains(box, point))
+            {
+                return { Hot::CanvasBody, -1 };
             }
         }
     }
@@ -1920,6 +2015,25 @@ Panel::Target Panel::HitTest(POINT point) const
             return Contains(hit, point) ? Target{ Hot::RowCheck, index }
                                         : Target{ Hot::RowBody, index };
         }
+    }
+
+    // Closed-note rows: the two buttons win over the row itself, the same way the checkbox wins
+    // over the title in the window list.
+    for (size_t index = 0; index < g.archiveRows.size(); ++index)
+    {
+        if (!Contains(g.archiveRows[index], point))
+        {
+            continue;
+        }
+        if (Contains(g.archiveRestore[index], point))
+        {
+            return { Hot::ArchiveRestore, static_cast<int>(index) };
+        }
+        if (Contains(g.archiveForget[index], point))
+        {
+            return { Hot::ArchiveForget, static_cast<int>(index) };
+        }
+        break;
     }
 
     if (Contains(g.mapCard, point))
@@ -2252,6 +2366,11 @@ void Panel::PaintSheet(HDC dc, const Geometry& geometry)
         PaintHistory(dc, geometry);
     }
 
+    if (!geometry.archiveRows.empty())
+    {
+        PaintArchive(dc, geometry);
+    }
+
     // Focus ring last, on top of everything it points at. Two rings so it survives any backdrop:
     // the inner one is the sheet colour, the outer one the accent.
     if (m_focus >= 0)
@@ -2419,6 +2538,25 @@ void Panel::PaintWallpaperBlock(HDC dc, const Geometry& geometry)
         util::i18n::Format(L"{} 台 · {} 组", m_state.monitors.size(), m_state.groups.size()),
         DT_RIGHT);
 
+    // Desktop calendar switch. Same track and knob as 自动恢复, so there is one switch in the
+    // product rather than one per feature.
+    {
+        const RECT& rect = geometry.canvasSwitch;
+        const int trackWidth = 30;
+        const int trackHeight = 17;
+        const int trackTop = (rect.top + rect.bottom) / 2 - trackHeight / 2;
+        const RECT track{ rect.left, trackTop, rect.left + trackWidth, trackTop + trackHeight };
+
+        FillRounded(dc, track, trackHeight / 2, m_state.canvasOn ? t.accent : t.line2);
+
+        const int knobX = m_state.canvasOn ? track.right - 2 - 13 : track.left + 2;
+        FillRounded(dc, RECT{ knobX, track.top + 2, knobX + 13, track.top + 15 }, 7,
+            RGB(255, 255, 255));
+
+        DrawTextBlock(dc, m_fontBody, m_hot == Hot::CanvasSwitch ? t.accent : t.text2,
+            RECT{ track.right + 6, rect.top, rect.right, rect.bottom }, L"日历", DT_LEFT);
+    }
+
     PaintMap(dc, geometry);
 }
 
@@ -2475,6 +2613,25 @@ RECT Panel::GroupBoxOnMap(const MapLayout& map, const core::Group& group) const
     }
 
     return RECT{ left, top, right, bottom };
+}
+
+core::CanvasRect Panel::ShownCanvas() const
+{
+    // During a drag the live position is here rather than in the state: the map has to follow the
+    // cursor, and the settings file is only written once, on release.
+    return m_canvasLive ? m_canvasDrag : m_state.canvas;
+}
+
+RECT Panel::CanvasRectOnMap(const MapLayout& map) const
+{
+    if (!map.valid)
+    {
+        return RECT{};
+    }
+
+    const core::CanvasRect canvas = ShownCanvas();
+    const core::Rect box{ canvas.x, canvas.y, canvas.size, canvas.size };
+    return map.projection.ToClient(box);
 }
 
 bool Panel::MonitorTakesDrag(int index) const
@@ -2808,6 +2965,28 @@ void Panel::PaintMap(HDC dc, const Geometry& geometry)
 
         DrawGroupOutline(dc, map, group, selected ? tint : Mix(tint, t.mapBg, 0.58), kFrameGap,
             thickness);
+    }
+
+    // The desktop calendar, over the pictures but under the screen numbers: the numbers are the
+    // map's click targets and a widget that hid one would make a screen unreachable.
+    if (m_state.canvasOn)
+    {
+        const RECT box = CanvasRectOnMap(map);
+        if (box.right > box.left && box.bottom > box.top)
+        {
+            const bool hot = m_hot == Hot::CanvasBody;
+
+            // Inset by one unit so the ring sits inside the square the widget actually occupies.
+            FillCircle(dc, box, RGB(0x17, 0x18, 0x1C));
+            StrokeCircle(dc, box, hot || m_draggingCanvas ? t.accent : RGB(0xC8, 0xA9, 0x6B),
+                hot || m_draggingCanvas ? 2 : 1);
+
+            const int centreX = (box.left + box.right) / 2;
+            const int centreY = (box.top + box.bottom) / 2;
+            const int dot = std::max(2, static_cast<int>(box.right - box.left) / 12);
+            FillCircle(dc, RECT{ centreX - dot, centreY - dot, centreX + dot, centreY + dot },
+                RGB(0xF7, 0xF3, 0xEA));
+        }
     }
 
     // Screen numbers last: they are the only click target inside the map, and they have to stay
@@ -3197,6 +3376,68 @@ void Panel::PaintHistory(HDC dc, const Geometry& geometry)
     }
 }
 
+void Panel::PaintArchive(HDC dc, const Geometry& geometry)
+{
+    const Theme& t = m_state.darkTheme ? kDark : kLight;
+
+    FillRounded(dc, geometry.archiveCard, 8, t.card);
+    StrokeRounded(dc, geometry.archiveCard, 8, t.line);
+
+    const int count = static_cast<int>(m_state.archivedNotes.size());
+    const std::wstring head = count > kArchiveRows
+        ? util::i18n::Format(L"便签历史 · {} 条（显示最近 {} 条）", count, kArchiveRows)
+        : util::i18n::Format(L"便签历史 · {} 条", count);
+    DrawTextBlock(dc, m_fontAux, t.text4, geometry.archiveHead, head,
+        DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
+
+    for (size_t index = 0; index < geometry.archiveRows.size(); ++index)
+    {
+        const core::ArchiveRecord& record =
+            m_state.archivedNotes[static_cast<size_t>(index)];
+        const RECT row = geometry.archiveRows[index];
+
+        if (m_hot == Hot::ArchiveRestore && m_hotIndex == static_cast<int>(index))
+        {
+            FillRounded(dc, row, 6, t.hover);
+        }
+
+        // The paper dot is the note's own colour, so a row is recognisable at a glance before the
+        // preview text is read. core stores RRGGBB; COLORREF wants the channels reversed.
+        const uint32_t paper = core::NoteThemeAt(record.theme).paper;
+        const COLORREF dot = RGB((paper >> 16) & 0xFF, (paper >> 8) & 0xFF, paper & 0xFF);
+        FillRounded(dc,
+            RECT{ row.left + 6, row.top + 11, row.left + 14, row.top + 19 }, 4, dot);
+        StrokeRounded(dc,
+            RECT{ row.left + 6, row.top + 11, row.left + 14, row.top + 19 }, 4, t.line2);
+
+        const RECT text = { row.left + 22, row.top + 2, geometry.archiveRestore[index].left - 8,
+            row.top + kArchiveRowHeight - 2 };
+        const std::wstring preview = record.preview.empty()
+            ? util::i18n::Cstr(L"（空白便签）") : record.preview;
+        // Two short lines, split cleanly at the middle of the row: the font's ascent reaches past
+        // its box, so a one-pixel overlap here reads as the time printed over the preview.
+        DrawTextBlock(dc, m_fontAux, t.text2,
+            RECT{ text.left, text.top, text.right, text.top + 12 }, preview,
+            DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
+        DrawTextBlock(dc, m_fontNum, t.text4,
+            RECT{ text.left, row.top + 16, text.right, row.top + 29 }, record.closedAt,
+            DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
+
+        const bool hotRestore =
+            m_hot == Hot::ArchiveRestore && m_hotIndex == static_cast<int>(index);
+        const bool hotForget =
+            m_hot == Hot::ArchiveForget && m_hotIndex == static_cast<int>(index);
+        DrawButton(dc, m_measure, t, m_fontAux, geometry.archiveRestore[index],
+            util::i18n::Cstr(L"恢复"), false, hotRestore,
+            m_pressed == Hot::ArchiveRestore && m_pressedIndex == static_cast<int>(index),
+            false, false, 0);
+        DrawButton(dc, m_measure, t, m_fontAux, geometry.archiveForget[index],
+            util::i18n::Cstr(L"删除"), false, hotForget,
+            m_pressed == Hot::ArchiveForget && m_pressedIndex == static_cast<int>(index),
+            false, false, 0);
+    }
+}
+
 // --- Popups and modal -----------------------------------------------------------------------
 
 std::vector<Panel::PopupEntry> Panel::PopupItems() const
@@ -3212,7 +3453,33 @@ std::vector<Panel::PopupEntry> Panel::PopupItems() const
             items.push_back(PopupEntry{ .text = L"状态记录", .id = 1, .checked = m_historyOpen });
             items.push_back(PopupEntry{ .separator = true });
             items.push_back(PopupEntry{ .text = L"开机启动", .id = 2, .checked = m_state.autostart });
+            items.push_back(PopupEntry{ .text = L"快捷键设置", .id = 3 });
             return items;
+
+        case Popup::HotkeyMenu:
+        {
+            for (const core::HotkeyAction action : core::kHotkeyActions)
+            {
+                const int id = static_cast<int>(action);
+                PopupEntry entry;
+                entry.id = id;
+                entry.text = core::HotkeyActionLabel(action);
+                if (m_recordingAction == id)
+                {
+                    entry.text = L"按下组合键…（Esc 取消）";
+                    entry.trailing = L"";
+                }
+                else
+                {
+                    entry.trailing = core::DescribeHotkey(m_state.hotkeys.At(action));
+                }
+                items.push_back(entry);
+            }
+            items.push_back(PopupEntry{ .separator = true });
+            items.push_back(PopupEntry{ .text = L"恢复默认", .id = 3 });
+            items.push_back(PopupEntry{ .text = L"完成", .id = 4 });
+            return items;
+        }
 
         case Popup::LanguageMenu:
         {
@@ -3321,6 +3588,9 @@ std::wstring Panel::PopupHead() const
 {
     switch (m_popup)
     {
+        case Popup::HotkeyMenu:
+            return L"全局快捷键（点一行后按下组合键）";
+
         case Popup::GroupJoin:
             if (m_popupIndex >= 0 && m_popupIndex < static_cast<int>(m_state.monitors.size()))
             {
@@ -3487,7 +3757,8 @@ void Panel::PaintPopup(HDC dc, const Geometry& geometry)
 
         int textLeft = row.left + 10;
 
-        if (m_popup == Popup::AppMenu || m_popup == Popup::LanguageMenu)
+        if (m_popup == Popup::AppMenu || m_popup == Popup::LanguageMenu
+            || m_popup == Popup::HotkeyMenu)
         {
             // The check column is always reserved, so labels do not shift when one is ticked.
             if (item.checked)
@@ -3524,9 +3795,12 @@ void Panel::PaintPopup(HDC dc, const Geometry& geometry)
 
         if (!item.trailing.empty())
         {
+            // "Ctrl + Alt + Shift + N" needs more room than a group count; the hotkey menu uses
+            // the wider column so a real combination never turns into "Ctrl + Alt + Sh…".
+            const int trailingWidth = m_popup == Popup::HotkeyMenu ? 172 : 72;
             DrawTextBlock(dc, m_fontAux, t.text4,
-                RECT{ row.right - 72, row.top, row.right - 8, row.bottom }, item.trailing,
-                DT_RIGHT | DT_END_ELLIPSIS);
+                RECT{ row.right - trailingWidth - 8, row.top, row.right - 8, row.bottom },
+                item.trailing, DT_RIGHT | DT_END_ELLIPSIS);
         }
 
         y += 26;
@@ -3695,6 +3969,7 @@ std::vector<Panel::Target> Panel::FocusRing(const Geometry& geometry) const
 
     ring.push_back({ Hot::Pick, -1 });
     ring.push_back({ Hot::ApplyWallpaper, -1 });
+    ring.push_back({ Hot::CanvasSwitch, -1 });
 
     for (const int monitor : geometry.chipMonitors)
     {
@@ -3720,6 +3995,12 @@ std::vector<Panel::Target> Panel::FocusRing(const Geometry& geometry) const
         ring.push_back({ Hot::ScreenBadge, index });
     }
 
+    for (size_t index = 0; index < geometry.archiveRows.size(); ++index)
+    {
+        ring.push_back({ Hot::ArchiveRestore, static_cast<int>(index) });
+        ring.push_back({ Hot::ArchiveForget, static_cast<int>(index) });
+    }
+
     ring.push_back({ Hot::Quit, -1 });
     return ring;
 }
@@ -3742,6 +4023,8 @@ RECT Panel::RectForTarget(const Geometry& geometry, const Target& target) const
             return geometry.pick;
         case Hot::ApplyWallpaper:
             return geometry.applyWallpaper;
+        case Hot::CanvasSwitch:
+            return geometry.canvasSwitch;
         case Hot::AutoLayout:
             return geometry.autoSwitch;
         case Hot::Refresh:
@@ -3750,6 +4033,18 @@ RECT Panel::RectForTarget(const Geometry& geometry, const Target& target) const
             return geometry.applyLayout;
         case Hot::Quit:
             return geometry.quit;
+        case Hot::ArchiveRestore:
+            if (target.index >= 0 && target.index < static_cast<int>(geometry.archiveRestore.size()))
+            {
+                return geometry.archiveRestore[static_cast<size_t>(target.index)];
+            }
+            return RECT{};
+        case Hot::ArchiveForget:
+            if (target.index >= 0 && target.index < static_cast<int>(geometry.archiveForget.size()))
+            {
+                return geometry.archiveForget[static_cast<size_t>(target.index)];
+            }
+            return RECT{};
 
         case Hot::GroupChip:
         case Hot::GroupAdd:
@@ -3821,19 +4116,35 @@ void Panel::OpenPopup(Popup kind, POINT anchor, int index)
     m_popupIndex = index;
     m_popupItem = -1;
     m_focus = -1;
+
+    // Give up the global combinations while the shortcut menu is up, so the key the user presses
+    // reaches this window instead of firing the old action through WM_HOTKEY.
+    if (kind == Popup::HotkeyMenu && m_onAction)
+    {
+        m_onAction(PanelRequest{ PanelAction::SuspendHotkeys });
+    }
+
     ::InvalidateRect(m_window, nullptr, FALSE);
 }
 
-void Panel::ClosePopup()
+void Panel::ClosePopup(bool keepHotkeysSuspended)
 {
     if (m_popup == Popup::None)
     {
         return;
     }
 
+    const bool wasHotkeys = m_popup == Popup::HotkeyMenu;
     m_popup = Popup::None;
     m_popupIndex = -1;
     m_popupItem = -1;
+    m_recordingAction = -1;
+
+    if (wasHotkeys && !keepHotkeysSuspended && m_onAction)
+    {
+        m_onAction(PanelRequest{ PanelAction::ResumeHotkeys });
+    }
+
     ::InvalidateRect(m_window, nullptr, FALSE);
 }
 
@@ -3879,8 +4190,12 @@ void Panel::ActivatePopup(int item)
     const PopupEntry entry = items[static_cast<size_t>(item)];
     const Popup kind = m_popup;
     const int index = m_popupIndex;
+    const int priorRecording = m_recordingAction;
 
-    ClosePopup();
+    // Most rows dismiss the menu. The hotkey rows put it straight back, so the global
+    // combinations must stay unregistered across this call: the key about to be recorded may
+    // currently be bound to one of them.
+    ClosePopup(kind == Popup::HotkeyMenu);
 
     auto emit = [this](PanelAction action, int argument = -1, int value = 0,
                     std::wstring target = {}) {
@@ -3911,8 +4226,47 @@ void Panel::ActivatePopup(int item)
                 case 2:
                     emit(PanelAction::ToggleAutostart);
                     break;
+                case 3:
+                    m_recordingAction = -1;
+                    // m_popupAt is where this AppMenu was anchored; the shortcut menu opens in the
+                    // same neighbourhood rather than jumping across the sheet.
+                    OpenPopup(Popup::HotkeyMenu, m_popupAt, -1);
+                    break;
                 default:
                     break;
+            }
+            return;
+
+        case Popup::HotkeyMenu:
+            if (entry.id == 1 || entry.id == 2)
+            {
+                // The row stays visible while recording so the hint and the arrow key context
+                // remain on screen - ClosePopup above dismissed it, so put it back first.
+                OpenPopup(kind, m_popupAt, index);
+                // Clicking a row starts recording; the next keypress binds it. A second click on
+                // the same row cancels, which is the only way out with the mouse alone.
+                m_recordingAction = priorRecording == entry.id ? -1 : entry.id;
+                if (m_recordingAction != -1)
+                {
+                    // The modifier keys of a global combination arrive as WM_SYSKEYDOWN, which
+                    // only goes to the focused window. A click normally sets focus already, but
+                    // an anchored menu opened by keyboard can leave it elsewhere.
+                    ::SetFocus(m_window);
+                }
+                ::InvalidateRect(m_window, nullptr, FALSE);
+            }
+            else if (entry.id == 3)
+            {
+                m_recordingAction = -1;
+                emit(PanelAction::ResetHotkeys);
+                emit(PanelAction::ResumeHotkeys);
+                ClosePopup();
+            }
+            else if (entry.id == 4)
+            {
+                m_recordingAction = -1;
+                emit(PanelAction::ResumeHotkeys);
+                ClosePopup();
             }
             return;
 
@@ -4086,6 +4440,25 @@ void Panel::Activate(const Target& target)
             return;
         }
 
+        case Hot::ArchiveRestore:
+        case Hot::ArchiveForget:
+        {
+            if (target.index < 0
+                || target.index >= static_cast<int>(m_state.archivedNotes.size()))
+            {
+                return;
+            }
+
+            PanelRequest request{ target.hot == Hot::ArchiveRestore
+                    ? PanelAction::ReopenNote : PanelAction::ForgetNote };
+            request.target = m_state.archivedNotes[static_cast<size_t>(target.index)].id;
+            if (m_onAction)
+            {
+                m_onAction(request);
+            }
+            return;
+        }
+
         case Hot::Quit:
             m_modal = Modal::Quit;
             ::InvalidateRect(m_window, nullptr, FALSE);
@@ -4093,7 +4466,12 @@ void Panel::Activate(const Target& target)
 
         case Hot::PopupItem:
         case Hot::ModalButton:
+        case Hot::CanvasSwitch:
+            emit(PanelAction::ToggleCanvas);
+            return;
+
         case Hot::MapBody:
+        case Hot::CanvasBody:
         case Hot::None:
             return;
     }
@@ -4179,6 +4557,62 @@ void Panel::ResetActiveView()
 
 void Panel::OnKeyDown(WPARAM key)
 {
+    // Recording swallows every key until a combination (or Esc) arrives. Modifier-only presses are
+    // ignored rather than bound: binding Ctrl alone is legal to RegisterHotKey but useless as a
+    // global shortcut, and it would fire on every Ctrl the user ever typed.
+    if (m_recordingAction >= 1 && m_recordingAction <= 2)
+    {
+        if (key == VK_ESCAPE)
+        {
+            m_recordingAction = -1;
+            ::InvalidateRect(m_window, nullptr, FALSE);
+            return;
+        }
+
+        if (key == VK_CONTROL || key == VK_SHIFT || key == VK_MENU || key == VK_LWIN
+            || key == VK_RWIN)
+        {
+            return;
+        }
+
+        const int action = m_recordingAction;
+        m_recordingAction = -1;
+
+        core::Hotkey hotkey;
+        if (key != VK_BACK)
+        {
+            const auto down = [](int vk) { return (::GetKeyState(vk) & 0x8000) != 0; };
+            if (down(VK_CONTROL))
+            {
+                hotkey.modifiers |= 0x0002; // MOD_CONTROL
+            }
+            if (down(VK_MENU))
+            {
+                hotkey.modifiers |= 0x0001; // MOD_ALT
+            }
+            if (down(VK_SHIFT))
+            {
+                hotkey.modifiers |= 0x0004; // MOD_SHIFT
+            }
+            if (down(VK_LWIN) || down(VK_RWIN))
+            {
+                hotkey.modifiers |= 0x0008; // MOD_WIN
+            }
+            hotkey.vk = static_cast<unsigned int>(key);
+        }
+
+        // index carries the combination (low word modifiers, high word vk), value the action.
+        const int packed = static_cast<int>((hotkey.vk << 16) | (hotkey.modifiers & 0xFFFF));
+        LogInfo(L"recorded hotkey for {}: {}+{}", action, hotkey.modifiers, hotkey.vk);
+        if (m_onAction)
+        {
+            m_onAction(PanelRequest{ PanelAction::SetHotkey, packed, action });
+        }
+        ClosePopup();
+        ::InvalidateRect(m_window, nullptr, FALSE);
+        return;
+    }
+
     const Geometry g = ComputeGeometry();
 
     switch (key)
@@ -4411,6 +4845,37 @@ LRESULT Panel::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam)
         {
             const POINT point = ToDesign(POINT{ GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam) });
 
+            if (m_draggingCanvas)
+            {
+                const Geometry g = ComputeGeometry();
+                const MapLayout map = LayoutMap(g);
+                if (map.valid && map.projection.scale > 0.0)
+                {
+                    // The map is a scaled copy of the virtual desktop, so a mouse delta becomes a
+                    // screen delta by dividing by the same scale that drew it.
+                    const int deltaX = static_cast<int>(std::lround(
+                        (point.x - m_canvasGrab.x) / map.projection.scale));
+                    const int deltaY = static_cast<int>(std::lround(
+                        (point.y - m_canvasGrab.y) / map.projection.scale));
+
+                    core::CanvasRect moved = m_canvasStart;
+                    moved.x = m_canvasStart.x + deltaX;
+                    moved.y = m_canvasStart.y + deltaY;
+
+                    // Kept on a display while it is being dragged: letting it slide into the void
+                    // would show a drop that the service then silently undoes.
+                    moved = core::ClampCanvas(moved, m_state.monitors);
+
+                    if (!(moved == m_canvasDrag))
+                    {
+                        m_canvasDrag = moved;
+                        m_canvasLive = true;
+                        ::InvalidateRect(m_window, nullptr, FALSE);
+                    }
+                }
+                return 0;
+            }
+
             if (m_panning)
             {
                 const Geometry g = ComputeGeometry();
@@ -4559,6 +5024,20 @@ LRESULT Panel::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam)
 
             const Target target = HitTest(point);
 
+            // Dragging the calendar moves it; dragging a screen moves that screen's picture.
+            if (target.hot == Hot::CanvasBody)
+            {
+                m_draggingCanvas = true;
+                m_canvasGrab = point;
+                m_canvasStart = ShownCanvas();
+                m_canvasDrag = m_canvasStart;
+                m_canvasLive = true;
+                ::SetCapture(m_window);
+                ::SetCursor(::LoadCursorW(nullptr, IDC_SIZEALL));
+                ::InvalidateRect(m_window, nullptr, FALSE);
+                return 0;
+            }
+
             // Dragging anywhere on a screen moves that screen's group picture, and grabbing a
             // different group's screen silently switches to it first - one gesture, no extra
             // click. The number badge is excluded: that is the group menu's trigger (I4).
@@ -4600,6 +5079,25 @@ LRESULT Panel::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam)
         case WM_LBUTTONUP:
         {
             ::ReleaseCapture();
+
+            if (m_draggingCanvas)
+            {
+                m_draggingCanvas = false;
+
+                const bool moved = m_canvasLive && !(m_canvasDrag == m_canvasStart);
+                const core::CanvasRect dropped = m_canvasDrag;
+                m_canvasLive = false;
+
+                // Written once, on release - same rule as the wallpaper pan.
+                if (moved && m_onAction)
+                {
+                    m_onAction(PanelRequest{
+                        PanelAction::MoveCanvas, -1, 0, core::WallpaperView{}, dropped.x, dropped.y });
+                }
+
+                ::InvalidateRect(m_window, nullptr, FALSE);
+                return 0;
+            }
 
             if (m_panning)
             {
@@ -4772,6 +5270,10 @@ LRESULT Panel::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam)
 
             switch (target.hot)
             {
+                case Hot::CanvasBody:
+                    ::SetCursor(::LoadCursorW(nullptr, IDC_SIZEALL));
+                    return TRUE;
+
                 case Hot::MapBody:
                     // The board between screens is not a drag surface, and neither is a screen
                     // with no picture on it: the move cursor appears exactly where dragging does
@@ -4791,6 +5293,9 @@ LRESULT Panel::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam)
         }
 
         case WM_KEYDOWN:
+        case WM_SYSKEYDOWN:
+            // A shortcut almost always carries Alt, which Windows delivers as WM_SYSKEYDOWN.
+            // Routing both here is what lets the recording row see Ctrl+Alt+N and not just the N.
             OnKeyDown(wparam);
             return 0;
 

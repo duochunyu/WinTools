@@ -25,6 +25,13 @@ constexpr wchar_t kKeyLastAutoRestore[] = L"layout.lastAutoRestore=";
 constexpr wchar_t kKeyTheme[] = L"theme=";
 constexpr wchar_t kKeyActiveGroup[] = L"wallpaper.activeGroup=";
 constexpr wchar_t kKeyLanguage[] = L"language=";
+constexpr wchar_t kKeyCanvas[] = L"canvas.enabled=";
+constexpr wchar_t kKeyCanvasX[] = L"canvas.x=";
+constexpr wchar_t kKeyCanvasY[] = L"canvas.y=";
+constexpr wchar_t kKeyCanvasSize[] = L"canvas.size=";
+constexpr wchar_t kKeyCanvasSweep[] = L"canvas.sweep=";
+constexpr wchar_t kKeyHotkeyNewNote[] = L"hotkey.newNote=";
+constexpr wchar_t kKeyHotkeyCapture[] = L"hotkey.capture=";
 
 std::wstring Trim(const std::wstring& text)
 {
@@ -173,6 +180,62 @@ Settings Settings::Load()
             {
             }
         }
+        else if (key == kKeyCanvas)
+        {
+            settings.canvasEnabled = ToBool(value);
+        }
+        else if (key == kKeyCanvasX)
+        {
+            try
+            {
+                settings.canvas.x = std::stoi(value);
+            }
+            catch (...)
+            {
+            }
+        }
+        else if (key == kKeyCanvasY)
+        {
+            try
+            {
+                settings.canvas.y = std::stoi(value);
+            }
+            catch (...)
+            {
+            }
+        }
+        else if (key == kKeyCanvasSize)
+        {
+            try
+            {
+                settings.canvas.size = core::ClampCanvasSize(std::stoi(value));
+            }
+            catch (...)
+            {
+            }
+        }
+        else if (key == kKeyCanvasSweep)
+        {
+            settings.canvasSweep = ToBool(value);
+        }
+        else if (key == kKeyHotkeyNewNote)
+        {
+            // An absent or unparsable value keeps the default, so settings written before
+            // shortcuts existed do not silently lose both bindings on upgrade.
+            const core::Hotkey parsed = core::ParseHotkey(value);
+            if (parsed.Bound() || value == L"0,0")
+            {
+                settings.hotkeys.At(core::HotkeyAction::NewNote) = parsed;
+            }
+        }
+        else if (key == kKeyHotkeyCapture)
+        {
+            const core::Hotkey parsed = core::ParseHotkey(value);
+            if (parsed.Bound() || value == L"0,0")
+            {
+                settings.hotkeys.At(core::HotkeyAction::Capture) = parsed;
+            }
+        }
     }
 
     // A hand-edited file can put anything in the three framing fields; the renderer refuses
@@ -211,6 +274,15 @@ bool Settings::Save() const
     text += std::format(L"{}{}\n", kKeyTheme, theme);
     text += std::format(L"{}{}\n", kKeyActiveGroup, activeGroup);
     text += std::format(L"{}{}\n", kKeyLanguage, language);
+    text += std::format(L"{}{}\n", kKeyCanvas, canvasEnabled ? 1 : 0);
+    text += std::format(L"{}{}\n", kKeyCanvasX, canvas.x);
+    text += std::format(L"{}{}\n", kKeyCanvasY, canvas.y);
+    text += std::format(L"{}{}\n", kKeyCanvasSize, canvas.size);
+    text += std::format(L"{}{}\n", kKeyCanvasSweep, canvasSweep ? 1 : 0);
+    text += std::format(L"{}{}\n", kKeyHotkeyNewNote,
+        core::FormatHotkey(hotkeys.At(core::HotkeyAction::NewNote)));
+    text += std::format(L"{}{}\n", kKeyHotkeyCapture,
+        core::FormatHotkey(hotkeys.At(core::HotkeyAction::Capture)));
 
     std::ofstream out(file, std::ios::binary | std::ios::trunc);
     if (!out)

@@ -57,7 +57,16 @@ add_library(wintools_core STATIC
     src/core/layout_store.cpp
     src/core/wallpaper_store.cpp
     src/core/group.cpp
+    src/core/hotkeys.cpp
     src/core/display_watcher.cpp
+    src/core/lunar.cpp
+    src/core/canvas.cpp
+    src/core/calendar_face.cpp
+    src/core/note_layout.cpp
+    src/core/note_archive.cpp
+    src/core/note_store.cpp
+    src/core/note_theme.cpp
+    src/core/rtf.cpp
     src/platform/win/com.cpp
     src/platform/win/wic.cpp
     src/util/i18n.cpp
@@ -86,6 +95,11 @@ add_executable(WinTools WIN32
     src/app/tray.cpp
     src/app/panel.cpp
     src/app/service.cpp
+    src/app/desktop_canvas.cpp
+    src/app/capture.cpp
+    src/app/note.cpp
+    src/app/note_palette.cpp
+    src/app/note_manager.cpp
     assets/app.rc
     # Listed as a source so CMake hands it to mt.exe; the linker already emits a manifest of its
     # own, and passing this one through /MANIFESTINPUT produces a duplicate resource instead.
@@ -111,10 +125,18 @@ add_executable(wintools_tests
     tests/layout_store_test.cpp
     tests/wallpaper_store_test.cpp
     tests/group_test.cpp
+    tests/hotkeys_test.cpp
     tests/i18n_test.cpp
     tests/piece_cache_test.cpp
     tests/preview_test.cpp
     tests/panel_view_test.cpp
+    tests/lunar_test.cpp
+    tests/canvas_test.cpp
+    tests/note_layout_test.cpp
+    tests/note_archive_test.cpp
+    tests/note_store_test.cpp
+    tests/note_theme_test.cpp
+    tests/rtf_test.cpp
     # Compiled into the test binary instead of a library of its own: these are the only UI-side
     # translation units with arithmetic worth asserting, and one-file libraries to hold them would
     # cost more than they explain. panel.cpp comes in for the pan/zoom model, which is static and

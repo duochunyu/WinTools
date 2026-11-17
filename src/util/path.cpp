@@ -32,6 +32,19 @@ std::filesystem::path AppDataFolder()
     return LocalAppData() / L"WinTools";
 }
 
+std::filesystem::path PicturesFolder()
+{
+    PWSTR raw = nullptr;
+    if (FAILED(::SHGetKnownFolderPath(FOLDERID_Pictures, KF_FLAG_CREATE, nullptr, &raw)))
+    {
+        return {};
+    }
+
+    std::filesystem::path result{ raw };
+    ::CoTaskMemFree(raw);
+    return result;
+}
+
 std::filesystem::path PieceFolder()
 {
     return AppDataFolder() / L"wallpaper" / L"pieces";

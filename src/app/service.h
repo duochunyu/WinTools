@@ -11,9 +11,12 @@
 #include <vector>
 
 #include "app/actions.h"
+#include "app/desktop_canvas.h"
+#include "app/note_manager.h"
 #include "app/panel.h"
 #include "app/settings.h"
 #include "app/tray.h"
+#include "core/canvas.h"
 #include "core/display_watcher.h"
 #include "core/group.h"
 
@@ -72,6 +75,18 @@ private:
 
     void SaveGroupsNow();
 
+    /// Brings the desktop calendar up, or takes it down. Idempotent both ways.
+    [[nodiscard]] bool StartCanvas();
+    void StopCanvas();
+
+    /// Registers every configured shortcut on the host window. Unregisters first, so a settings
+    /// change can rebind without restarting. A single collision is logged and skipped.
+    void RegisterHotkeys();
+    void UnregisterHotkeys();
+
+    /// Re-clamps the calendar after the display layout changed.
+    void SyncCanvas();
+
     /// Renders and applies every group; the piece cache is swept once, at the end.
     ActionResult ApplyAllGroups() const;
 
@@ -124,6 +139,8 @@ private:
 
     Panel m_panel;
     TrayIcon m_tray;
+    DesktopCanvas m_canvas;
+    NoteManager m_notes;
     std::unique_ptr<core::DisplayWatcher> m_watcher;
 };
 

@@ -12,6 +12,10 @@ namespace wintools::util
 /// %LOCALAPPDATA%\WinTools
 [[nodiscard]] std::filesystem::path AppDataFolder();
 
+/// The user's Pictures library, for screenshots taken with the global hotkey. Empty when the
+/// known-folder lookup fails, so callers can fall back rather than writing somewhere surprising.
+[[nodiscard]] std::filesystem::path PicturesFolder();
+
 /// %LOCALAPPDATA%\WinTools\wallpaper\pieces - where generated per-monitor pieces land.
 [[nodiscard]] std::filesystem::path PieceFolder();
 
