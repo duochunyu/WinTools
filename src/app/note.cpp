@@ -90,6 +90,21 @@ constexpr float kIconDesign = 19.0F;
 /// takes a fractional pen, so this stays at the sample's weight instead of rounding up to 2 px.
 constexpr float kIconStrokeDesign = kIconDesign * 1.8F / 24.0F;
 
+/// The rule and the timestamp are one composition: a line box kStampLine tall, centred in the header
+/// (the icons use the same centre). The browser sample positions both absolutely at top:9px with a
+/// 20px line-height, which is that same box on a 30-unit header.
+constexpr float kStampLine = 20.0F;
+
+/// Timestamp size in the same terms as the rest of the layout (the body is 15). One step under the
+/// body, and deliberately the smaller step: at 13 the digits sit so close to the body's cap height
+/// that the line reads as a second body row rather than as metadata.
+constexpr float kStampDesign = 12.0F;
+
+/// GDI sizes a face by cell height, GDI+ by em. For Microsoft YaHei those differ by about 15%, so a
+/// layout written in GDI units (the body's CreateFontW(-15), this stamp's 12) has to be converted
+/// before it is handed to GDI+ - otherwise the same number draws 15% narrower than GDI did.
+constexpr float kCellToEm = 15.0F / 13.0F;
+
 enum Button
 {
     kButtonNone = -1,
@@ -2257,17 +2272,23 @@ void Note::PaintTimestamp(HDC dc)
     const float scale = ScaleF(1.0F);
     const float ruleX = ScaleF(static_cast<float>(kMarginDesign)) + static_cast<float>(m_border);
 
+    // One line box, centred in the header. The icons sit on that same centre line, so the title row
+    // reads as a single thing instead of three elements pinned to different offsets.
+    const float lineHeight = scale * kStampLine;
+    const float lineTop = (static_cast<float>(m_headerHeight) - lineHeight) / 2.0F;
+
     Gdiplus::Graphics graphics(dc);
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
     graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
 
     {
         // A 2-unit vertical line on integer pixels has nothing to anti-alias, but the round caps
-        // still look better than the square ends a raw GDI pen leaves behind.
+        // still look better than the square ends a raw GDI pen leaves behind. It spans the line box,
+        // so it brackets the digits instead of hanging off one end of them.
         Gdiplus::Pen rule(ToGdiplus(ink), scale * 2.0F);
         rule.SetStartCap(Gdiplus::LineCapRound);
         rule.SetEndCap(Gdiplus::LineCapRound);
-        graphics.DrawLine(&rule, ruleX, scale * 9.0F, ruleX, scale * 29.0F);
+        graphics.DrawLine(&rule, ruleX, lineTop, ruleX, lineTop + lineHeight);
     }
 
     // The timestamp starts one margin clear of the rule, so the two never touch.
@@ -2290,17 +2311,12 @@ void Note::PaintTimestamp(HDC dc)
     // Filled outline, not DrawString. Measured against the style sample, the two rasterisers land
     // in different places: DrawString grid-fits every stem onto whole pixels and comes out a weight
     // light, while filling the unhinted outline reproduces the sample's 108x12 ink box within a
-    // pixel (107x12) and its ink weight within 5% (296 vs 310 covered pixels). The browser that
-    // drew the sample does the same thing - it positions glyphs at fractional offsets.
-    //
-    // 15, not the 13 the old GDI call asked for: CreateFontW sizes by cell height, GDI+ by em, and
-    // for Microsoft YaHei the two differ by about 15%. 13 em here would be the 15 px narrower text
-    // the sample is complaining about; 15 em is the same width GDI drew at -13, and still two
-    // points under the body, which is a 15 px cell.
+    // pixel and its ink weight within 5% (296 vs 310 covered pixels). The browser that drew the
+    // sample does the same thing - it positions glyphs at fractional offsets.
+    const float em = scale * kStampDesign * kCellToEm;
     Gdiplus::GraphicsPath path;
-    path.AddString(stamp.c_str(), -1, family, Gdiplus::FontStyleRegular,
-        std::round(scale * 15.0F), Gdiplus::RectF(textLeft, 0.0F, textRight - textLeft,
-            static_cast<float>(m_headerHeight)), &format);
+    path.AddString(stamp.c_str(), -1, family, Gdiplus::FontStyleRegular, em,
+        Gdiplus::RectF(textLeft, lineTop, textRight - textLeft, lineHeight), &format);
 
     Gdiplus::SolidBrush brush(ToGdiplus(ink));
     graphics.FillPath(&brush, &path);
