@@ -122,6 +122,11 @@ private:
     void CreateBody();
     void StyleBody();
 
+    /// Puts the loaded text back on the note's body size. RTF carries a \fs per run, so a note
+    /// written before the body grew a size would otherwise keep the smaller text next to anything
+    /// typed today. Size only - colour and face are the document's business and are left alone.
+    void MatchBodySize();
+
     /// Paragraph spacing only. Kept apart from StyleBody because it has to run again after a body
     /// has been streamed in - RTF carries its own \sl and would otherwise put the text back to
     /// single spacing - while the character format must not, or every pasted colour would be

@@ -63,6 +63,11 @@ constexpr int kSideInsetDesign = 8;
 /// look pinned to the edge.
 constexpr int kBodyTopDesign = 4;
 
+/// Body text size, in the same GDI cell-height units as everything else on this list. Two steps above
+/// the 15 the note shipped with: one step (16) is a single pixel at 125% scaling and reads as no
+/// change at all, while 12 (the timestamp) and 17 keep the two lines clearly apart.
+constexpr int kBodyDesign = 17;
+
 /// Paper left below the last line, so text stops short of the bottom edge the way it does at the
 /// top. Half the header, per the same rhythm.
 constexpr int kBottomPadDesign = 15;
@@ -95,14 +100,14 @@ constexpr float kIconStrokeDesign = kIconDesign * 1.8F / 24.0F;
 /// 20px line-height, which is that same box on a 30-unit header.
 constexpr float kStampLine = 20.0F;
 
-/// Timestamp size in the same terms as the rest of the layout (the body is 15). One step under the
+/// Timestamp size in the same terms as the rest of the layout (see kBodyDesign). Two steps under the
 /// body, and deliberately the smaller step: at 13 the digits sit so close to the body's cap height
 /// that the line reads as a second body row rather than as metadata.
 constexpr float kStampDesign = 12.0F;
 
 /// GDI sizes a face by cell height, GDI+ by em. For Microsoft YaHei those differ by about 15%, so a
-/// layout written in GDI units (the body's CreateFontW(-15), this stamp's 12) has to be converted
-/// before it is handed to GDI+ - otherwise the same number draws 15% narrower than GDI did.
+/// layout written in GDI units (CreateFontW(-13) for this stamp's 12) has to be converted before it
+/// is handed to GDI+ - otherwise the same number draws 15% narrower than GDI did.
 constexpr float kCellToEm = 15.0F / 13.0F;
 
 enum Button
@@ -443,7 +448,7 @@ bool Note::Create(HINSTANCE instance, std::wstring id, const core::Rect& rect, i
             OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, quality, DEFAULT_PITCH, L"Microsoft YaHei UI");
     };
 
-    m_fontBody = makeFont(15, FW_NORMAL, ANTIALIASED_QUALITY);
+    m_fontBody = makeFont(kBodyDesign, FW_NORMAL, ANTIALIASED_QUALITY);
 
     ApplyTheme(m_theme);
 
@@ -633,8 +638,10 @@ void Note::StyleBody()
     format.crTextColor = kInk;
 
     // yHeight is in twips, and a twip is 1/20 point: 1440/dpi converts a pixel size to twips at
-    // this window's scaling.
-    format.yHeight = ::MulDiv(15, 1440, m_dpi);
+    // this window's scaling. The pixel size has to be the scaled one - passing the raw design number
+    // asks RichEdit for 15 px on a 125% display while the control font is already 19 px, and the
+    // text then shrinks the moment this format is applied.
+    format.yHeight = ::MulDiv(Scale(kBodyDesign), 1440, m_dpi);
 
     const std::wstring face = L"Microsoft YaHei UI";
     wcsncpy_s(format.szFaceName, face.c_str(), _TRUNCATE);
@@ -644,6 +651,21 @@ void Note::StyleBody()
     ::SendMessageW(m_body, EM_SETMODIFY, FALSE, 0);
 
     m_suspendNotify = false;
+}
+
+void Note::MatchBodySize()
+{
+    if (m_body == nullptr)
+    {
+        return;
+    }
+
+    CHARFORMAT2W format{};
+    format.cbSize = sizeof(format);
+    format.dwMask = CFM_SIZE;
+    format.yHeight = ::MulDiv(Scale(kBodyDesign), 1440, m_dpi);
+
+    ::SendMessageW(m_body, EM_SETCHARFORMAT, SCF_ALL, reinterpret_cast<LPARAM>(&format));
 }
 
 void Note::ApplyLineSpacing()
@@ -777,6 +799,7 @@ void Note::LoadBody()
 
     // The stream carried the note's own \sl values, which are single spacing from the builds
     // before the body knew better.
+    MatchBodySize();
     ApplyLineSpacing();
     UpdateScrollbar();
 
