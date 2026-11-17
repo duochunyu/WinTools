@@ -100,6 +100,7 @@ private:
 
     /// Device pixels from the 96 dpi numbers the layout is written in.
     [[nodiscard]] int Scale(int value) const;
+    [[nodiscard]] float ScaleF(float value) const;
 
     void Metrics();
     void LayoutChildren();
@@ -186,10 +187,8 @@ private:
     std::wstring m_id;
     core::Rect m_rect{};
 
-    HFONT m_fontSmall{};
     HFONT m_fontBody{};
     HBRUSH m_paper{};
-    HBRUSH m_hoverFill{};
 
     /// The paper the note is written on, as resolved colours. Rebuilt from core::NoteThemeAt
     /// whenever SetTheme runs; GDI wants COLORREF, the palette is stored as plain 0xRRGGBB.
@@ -199,6 +198,7 @@ private:
     COLORREF m_ruleColor{};
     COLORREF m_mutedColor{};
     COLORREF m_iconColor{};
+    COLORREF m_hoverColor{};
 
     int m_dpi{ 96 };
 

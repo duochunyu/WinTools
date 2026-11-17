@@ -245,7 +245,7 @@ Three constraints run through the whole project:
 
 | Trait | Approach |
 |---|---|
-| Zero-dependency single file | Statically linked CRT; imports only `KERNEL32 / USER32 / GDI32 / ole32 / SHELL32 / ADVAPI32 / dwmapi` |
+| Zero-dependency single file | Statically linked CRT; imports only `KERNEL32 / USER32 / GDI32 / ole32 / SHELL32 / ADVAPI32 / dwmapi / gdiplus` |
 | Pure COM graphics stack | `IDesktopWallpaper` + `IWICImagingFactory`, both built into Windows; no WinRT / .NET / Windows App SDK |
 | Testable geometry | Cover cropping, framing, placement plans and panel geometry are static pure functions; the test binary compiles `panel.cpp` directly |
 | Group-based rendering | One `RenderSpan` per group over its own member canvas; all `pieces` are collected before a single cleanup pass |

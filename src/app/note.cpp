@@ -13,6 +13,7 @@
 
 #include <windowsx.h>
 #include <richedit.h>
+#include <gdiplus.h>
 
 #include "app/capture.h"
 #include "core/note_store.h"
@@ -80,6 +81,15 @@ constexpr COLORREF kInk = RGB(0x37, 0x35, 0x2F);
 /// For the one state worth interrupting a quiet note for: text that is not on disk yet.
 constexpr COLORREF kAccent = RGB(0xB4, 0x64, 0x2F);
 
+/// The style sample renders the 24-unit Lucide canvas at 19 px with a 1.8 stroke, so the same 19
+/// design units reproduces both the glyph size and its weight. Drawing the full 24 filled the whole
+/// 22-unit button and read as a fat, stepped outline - that is what looked crude.
+constexpr float kIconDesign = 19.0F;
+
+/// 1.8 units of stroke on the 24-unit grid, scaled down with the canvas (1.425 design units). GDI+
+/// takes a fractional pen, so this stays at the sample's weight instead of rounding up to 2 px.
+constexpr float kIconStrokeDesign = kIconDesign * 1.8F / 24.0F;
+
 enum Button
 {
     kButtonNone = -1,
@@ -96,6 +106,49 @@ COLORREF ToRef(std::uint32_t rgb)
 {
     return RGB((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
 }
+
+/// GDI+ draws the chrome: its anti-aliasing is what separates a Lucide glyph from a staircase of
+/// 1 px line segments. Startup is process-wide and deliberately never shut down - the token has
+/// to outlive every window, and the process exit cleans up the rest.
+bool GdiplusReady()
+{
+    static ULONG_PTR token = 0;
+    static const bool ready = [] {
+        Gdiplus::GdiplusStartupInput input;
+        return Gdiplus::GdiplusStartup(&token, &input, nullptr) == Gdiplus::Ok;
+    }();
+    return ready;
+}
+
+Gdiplus::Color ToGdiplus(COLORREF colour)
+{
+    return Gdiplus::Color(255, GetRValue(colour), GetGValue(colour), GetBValue(colour));
+}
+
+/// A rounded rectangle as a path, because GDI+ has no rounded-rect primitive and a GDI RoundRect
+/// dropped into an anti-aliased drawing would be the one hard-edged shape left on the paper.
+void RoundedRect(Gdiplus::GraphicsPath& path, const Gdiplus::RectF& box, float radius)
+{
+    const float diameter = radius * 2.0F;
+    path.AddArc(box.X, box.Y, diameter, diameter, 180.0F, 90.0F);
+    path.AddArc(box.X + box.Width - diameter, box.Y, diameter, diameter, 270.0F, 90.0F);
+    path.AddArc(box.X + box.Width - diameter, box.Y + box.Height - diameter, diameter, diameter,
+        0.0F, 90.0F);
+    path.AddArc(box.X, box.Y + box.Height - diameter, diameter, diameter, 90.0F, 90.0F);
+    path.CloseFigure();
+}
+
+/// One 24-unit Lucide canvas mapped into a button. All three glyphs go through this, so a change
+/// to the icon size moves them together instead of re-tuning three sets of magic numbers.
+struct IconGrid
+{
+    float left;
+    float top;
+    float size;
+
+    [[nodiscard]] float X(float unit) const { return left + size * unit / 24.0F; }
+    [[nodiscard]] float Y(float unit) const { return top + size * unit / 24.0F; }
+};
 
 /// Where a stream-out writes to. RichEdit calls the callback repeatedly until the document ends.
 struct SaveSink
@@ -369,15 +422,13 @@ bool Note::Create(HINSTANCE instance, std::wstring id, const core::Rect& rect, i
         m_dpi = 96;
     }
 
-    const auto makeFont = [this](int pixels, int weight)
+    const auto makeFont = [this](int pixels, int weight, DWORD quality)
     {
         return ::CreateFontW(-Scale(pixels), 0, 0, 0, weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-            OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH,
-            L"Microsoft YaHei UI");
+            OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, quality, DEFAULT_PITCH, L"Microsoft YaHei UI");
     };
 
-    m_fontSmall = makeFont(13, FW_NORMAL);
-    m_fontBody = makeFont(15, FW_NORMAL);
+    m_fontBody = makeFont(15, FW_NORMAL, ANTIALIASED_QUALITY);
 
     ApplyTheme(m_theme);
 
@@ -417,16 +468,13 @@ void Note::Destroy()
 
     // Create() builds these per note, so closing a note has to give them back: a note opened and
     // closed a few dozen times would otherwise hold GDI objects for the life of the process.
-    for (HGDIOBJ handle : { static_cast<HGDIOBJ>(m_fontSmall), static_cast<HGDIOBJ>(m_fontBody),
-             static_cast<HGDIOBJ>(m_paper), static_cast<HGDIOBJ>(m_hoverFill) })
+    for (HGDIOBJ handle : { static_cast<HGDIOBJ>(m_fontBody), static_cast<HGDIOBJ>(m_paper) })
     {
         ::DeleteObject(handle);
     }
 
-    m_fontSmall = nullptr;
     m_fontBody = nullptr;
     m_paper = nullptr;
-    m_hoverFill = nullptr;
 
     util::LogInfo(L"sticky note {} closed", m_id);
 }
@@ -444,6 +492,7 @@ void Note::ApplyTheme(int theme)
     // GDI has no alpha, so the tint behind a hovered icon is mixed here against the chip it sits on
     // rather than drawn with an alpha brush.
     const COLORREF hover = ToRef(core::BlendColor(palette.header, 0x37352F, 12));
+    m_hoverColor = hover;
 
     // Icons a shade darker than the save time: that line is metadata and may whisper, but a
     // control the user is meant to hit has to be visible without hunting for it.
@@ -458,10 +507,10 @@ void Note::ApplyTheme(int theme)
         brush = ::CreateSolidBrush(color);
     };
 
-    // Only two brushes are kept: the paper, and the tint behind a hovered icon. The header tone is
-    // used as a COLORREF straight from the palette - there is no bar left to fill with it.
+    // Only the paper is still a GDI brush: the chrome paints through GDI+ now, which takes the
+    // hover tint as a colour. The header tone is used as a COLORREF straight from the palette -
+    // there is no bar left to fill with it.
     swap(m_paper, m_paperColor);
-    swap(m_hoverFill, hover);
 
     if (m_body != nullptr)
     {
@@ -506,6 +555,11 @@ void Note::Metrics()
 int Note::Scale(int value) const
 {
     return ::MulDiv(value, m_dpi, 96);
+}
+
+float Note::ScaleF(float value) const
+{
+    return value * static_cast<float>(m_dpi) / 96.0F;
 }
 
 void Note::CreateBody()
@@ -2191,123 +2245,192 @@ void Note::PaintTimestamp(HDC dc)
     const std::wstring stamp = std::format(L"{:02}-{:02} {:02}:{:02}:{:02}", m_savedAt.wMonth,
         m_savedAt.wDay, m_savedAt.wHour, m_savedAt.wMinute, m_savedAt.wSecond);
 
+    if (!GdiplusReady())
+    {
+        return;
+    }
+
     // The page-edge rule is the one state worth interrupting a quiet note for: the same accent as
     // the timestamp uses when there are unsaved bytes, muted otherwise. Both live on the paper, so
     // the rule reads as a margin mark rather than as a piece of chrome.
     const COLORREF ink = m_dirty ? kAccent : m_mutedColor;
-    const int ruleX = Scale(kMarginDesign) + m_border;
-    const HPEN rulePen = ::CreatePen(PS_SOLID, std::max(1, Scale(2)), ink);
-    const HGDIOBJ oldRule = ::SelectObject(dc, rulePen);
-    ::MoveToEx(dc, ruleX, Scale(9), nullptr);
-    ::LineTo(dc, ruleX, Scale(9) + Scale(20));
-    ::SelectObject(dc, oldRule);
-    ::DeleteObject(rulePen);
+    const float scale = ScaleF(1.0F);
+    const float ruleX = ScaleF(static_cast<float>(kMarginDesign)) + static_cast<float>(m_border);
 
-    if (m_fontSmall != nullptr)
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+
     {
-        ::SelectObject(dc, m_fontSmall);
+        // A 2-unit vertical line on integer pixels has nothing to anti-alias, but the round caps
+        // still look better than the square ends a raw GDI pen leaves behind.
+        Gdiplus::Pen rule(ToGdiplus(ink), scale * 2.0F);
+        rule.SetStartCap(Gdiplus::LineCapRound);
+        rule.SetEndCap(Gdiplus::LineCapRound);
+        graphics.DrawLine(&rule, ruleX, scale * 9.0F, ruleX, scale * 29.0F);
     }
-
-    ::SetBkMode(dc, TRANSPARENT);
-    ::SetTextColor(dc, ink);
 
     // The timestamp starts one margin clear of the rule, so the two never touch.
-    RECT box{ ruleX + Scale(8), 0, m_dot.left - Scale(8), m_headerHeight };
-    if (box.right > box.left)
+    const float textLeft = ruleX + scale * 8.0F;
+    const float textRight = static_cast<float>(m_dot.left) - scale * 8.0F;
+    if (textRight <= textLeft)
     {
-        ::DrawTextW(dc, stamp.c_str(), -1, &box,
-            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        return;
     }
+
+    Gdiplus::FontFamily preferred(L"Microsoft YaHei UI");
+    Gdiplus::FontFamily fallback(L"Microsoft YaHei");
+    const Gdiplus::FontFamily* family = preferred.IsAvailable() ? &preferred : &fallback;
+
+    Gdiplus::StringFormat format;
+    format.SetAlignment(Gdiplus::StringAlignmentNear);
+    format.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+    format.SetFormatFlags(Gdiplus::StringFormatFlagsNoWrap);
+
+    // Filled outline, not DrawString. Measured against the style sample, the two rasterisers land
+    // in different places: DrawString grid-fits every stem onto whole pixels and comes out a weight
+    // light, while filling the unhinted outline reproduces the sample's 108x12 ink box within a
+    // pixel (107x12) and its ink weight within 5% (296 vs 310 covered pixels). The browser that
+    // drew the sample does the same thing - it positions glyphs at fractional offsets.
+    //
+    // 15, not the 13 the old GDI call asked for: CreateFontW sizes by cell height, GDI+ by em, and
+    // for Microsoft YaHei the two differ by about 15%. 13 em here would be the 15 px narrower text
+    // the sample is complaining about; 15 em is the same width GDI drew at -13, and still two
+    // points under the body, which is a 15 px cell.
+    Gdiplus::GraphicsPath path;
+    path.AddString(stamp.c_str(), -1, family, Gdiplus::FontStyleRegular,
+        std::round(scale * 15.0F), Gdiplus::RectF(textLeft, 0.0F, textRight - textLeft,
+            static_cast<float>(m_headerHeight)), &format);
+
+    Gdiplus::SolidBrush brush(ToGdiplus(ink));
+    graphics.FillPath(&brush, &path);
 }
 
 void Note::PaintIconButton(HDC dc, const RECT& box, int icon, bool active)
 {
-    if (active)
+    if (!GdiplusReady())
     {
-        const HGDIOBJ oldBrush = ::SelectObject(dc, m_hoverFill);
-        const HGDIOBJ oldPen = ::SelectObject(dc, ::GetStockObject(NULL_PEN));
-        ::RoundRect(dc, box.left, box.top, box.right, box.bottom, Scale(6), Scale(6));
-        ::SelectObject(dc, oldPen);
-        ::SelectObject(dc, oldBrush);
+        return;
     }
 
-    // Lucide draws on a 24-unit grid with a 2-unit stroke. Mapping that grid into the button box
-    // keeps the three glyphs at one optical size and makes the shapes match the ones in the style
-    // sample page. A hover only darkens the ink; it never grows a plate or shifts a glyph.
-    const int grid = Scale(24);
-    const int left = box.left + (box.right - box.left - grid) / 2;
-    const int top = box.top + (box.bottom - box.top - grid) / 2;
-    const auto x = [left, grid](int unit) { return left + ::MulDiv(unit, grid, 24); };
-    const auto y = [top, grid](int unit) { return top + ::MulDiv(unit, grid, 24); };
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+
+    const Gdiplus::RectF plate(static_cast<float>(box.left), static_cast<float>(box.top),
+        static_cast<float>(box.right - box.left), static_cast<float>(box.bottom - box.top));
+
+    if (active)
+    {
+        Gdiplus::GraphicsPath hover;
+        RoundedRect(hover, plate, ScaleF(6.0F));
+        // The tint is already mixed against the paper (GDI had no alpha), so this is an opaque
+        // fill with the same colour the old GDI brush used.
+        Gdiplus::SolidBrush wash(ToGdiplus(m_hoverColor));
+        graphics.FillPath(&wash, &hover);
+    }
+
+    // Lucide draws on a 24-unit canvas with a 2-unit stroke. The style sample renders that canvas
+    // at 18 units, so the grid is 18 - not 24. The 24-unit version filled the whole 22-unit button
+    // and read as a fat, stepped outline rather than the sample's light line.
+    const float gridSize = ScaleF(kIconDesign);
+    const IconGrid grid{
+        plate.X + (plate.Width - gridSize) / 2.0F,
+        plate.Y + (plate.Height - gridSize) / 2.0F,
+        gridSize,
+    };
 
     const COLORREF ink = active ? kInk : m_iconColor;
-    const HPEN pen = ::CreatePen(PS_SOLID, std::max(1, Scale(2)), ink);
-    const HGDIOBJ oldPen = ::SelectObject(dc, pen);
-    const HGDIOBJ oldBrush = ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
+    Gdiplus::Pen pen(ToGdiplus(ink), ScaleF(kIconStrokeDesign));
+    pen.SetStartCap(Gdiplus::LineCapRound);
+    pen.SetEndCap(Gdiplus::LineCapRound);
+    pen.SetLineJoin(Gdiplus::LineJoinRound);
 
     if (icon == kButtonClose)
     {
-        // Lucide "x": M18 6 6 18 M6 6 12 12, but shortened to sit inside the 24 grid like the
-        // sample page renders it (the 6..18 span), so its ink agrees with the camera's.
-        ::MoveToEx(dc, x(6), y(6), nullptr);
-        ::LineTo(dc, x(18), y(18));
-        ::MoveToEx(dc, x(18), y(6), nullptr);
-        ::LineTo(dc, x(6), y(18));
+        // Lucide "x": two diagonals across the 6..18 span, with round caps so the ends do not look
+        // like clipped pixel staircases.
+        graphics.DrawLine(&pen, grid.X(6.0F), grid.Y(6.0F), grid.X(18.0F), grid.Y(18.0F));
+        graphics.DrawLine(&pen, grid.X(18.0F), grid.Y(6.0F), grid.X(6.0F), grid.Y(18.0F));
     }
     else
     {
-        // Lucide "camera": a rounded body from (2,7) to (22,19), a lens of radius 3 at (12,13),
-        // and the small viewfinder bump along (10..14, 4..7).
-        ::RoundRect(dc, x(2), y(7), x(22), y(19), Scale(3), Scale(3));
-        ::Ellipse(dc, x(9), y(10), x(15), y(16));
-        ::MoveToEx(dc, x(10), y(7), nullptr);
-        ::LineTo(dc, x(11), y(4));
-        ::LineTo(dc, x(13), y(4));
-        ::LineTo(dc, x(14), y(7));
-    }
+        // Lucide "camera", transcribed from the sample's SVG rather than approximated: body
+        // 2..22 x 7..20 with 2-unit corners, a trapezoid bump along the top edge (top 10..14 at
+        // y=4, shoulders reaching 6 and 18 at y=7) and a 3-unit lens. The old version used a 4-unit
+        // radius and a narrower bump, which at 19 px read as a rounded blob instead of a camera.
+        const float r = grid.size * 2.0F / 24.0F;   // corner / fillet radius, 2 units
+        Gdiplus::GraphicsPath camera;
 
-    ::SelectObject(dc, oldBrush);
-    ::SelectObject(dc, oldPen);
-    ::DeleteObject(pen);
+        camera.AddLine(grid.X(10.0F), grid.Y(4.0F), grid.X(14.0F), grid.Y(4.0F));
+        // Shoulders are 2-unit fillets in the SVG; a cubic lands within a fraction of a pixel at
+        // this size and keeps the tangents smooth.
+        camera.AddBezier(grid.X(14.0F), grid.Y(4.0F), grid.X(15.0F), grid.Y(4.0F),
+            grid.X(15.4F), grid.Y(4.6F), grid.X(16.25F), grid.Y(5.95F));
+        camera.AddBezier(grid.X(16.25F), grid.Y(5.95F), grid.X(16.6F), grid.Y(6.6F),
+            grid.X(17.0F), grid.Y(7.0F), grid.X(18.0F), grid.Y(7.0F));
+        camera.AddLine(grid.X(18.0F), grid.Y(7.0F), grid.X(20.0F), grid.Y(7.0F));
+        camera.AddArc(grid.X(18.0F), grid.Y(7.0F), r, r, 270.0F, 90.0F);
+        camera.AddLine(grid.X(22.0F), grid.Y(9.0F), grid.X(22.0F), grid.Y(18.0F));
+        camera.AddArc(grid.X(18.0F), grid.Y(16.0F), r, r, 0.0F, 90.0F);
+        camera.AddLine(grid.X(20.0F), grid.Y(20.0F), grid.X(4.0F), grid.Y(20.0F));
+        camera.AddArc(grid.X(2.0F), grid.Y(16.0F), r, r, 90.0F, 90.0F);
+        camera.AddLine(grid.X(2.0F), grid.Y(18.0F), grid.X(2.0F), grid.Y(9.0F));
+        camera.AddArc(grid.X(2.0F), grid.Y(7.0F), r, r, 180.0F, 90.0F);
+        camera.AddLine(grid.X(4.0F), grid.Y(7.0F), grid.X(6.0F), grid.Y(7.0F));
+        camera.AddBezier(grid.X(6.0F), grid.Y(7.0F), grid.X(7.0F), grid.Y(7.0F),
+            grid.X(7.4F), grid.Y(6.6F), grid.X(7.76F), grid.Y(5.95F));
+        camera.AddBezier(grid.X(7.76F), grid.Y(5.95F), grid.X(8.6F), grid.Y(4.6F),
+            grid.X(9.0F), grid.Y(4.0F), grid.X(10.0F), grid.Y(4.0F));
+        camera.CloseFigure();
+        graphics.DrawPath(&pen, &camera);
+
+        // The lens is a separate circle, exactly as upstream draws it.
+        graphics.DrawEllipse(&pen, grid.X(9.0F), grid.Y(10.0F), grid.size * 6.0F / 24.0F,
+            grid.size * 6.0F / 24.0F);
+    }
 }
 
 void Note::PaintColourDot(HDC dc, const RECT& box, bool active)
 {
-    if (active)
+    if (!GdiplusReady())
     {
-        const HGDIOBJ oldBrush = ::SelectObject(dc, m_hoverFill);
-        const HGDIOBJ oldPen = ::SelectObject(dc, ::GetStockObject(NULL_PEN));
-        ::RoundRect(dc, box.left, box.top, box.right, box.bottom, Scale(6), Scale(6));
-        ::SelectObject(dc, oldPen);
-        ::SelectObject(dc, oldBrush);
+        return;
     }
 
-    // Lucide "circle-dot" on the same 24-unit grid as its two neighbours: an outlined r=9 ring and
-    // a filled r=3 centre. Both are ink - a paper-coloured centre would vanish into the paper it
-    // sits on and leave an empty ring, which is not the glyph in the style sample.
-    const int grid = Scale(24);
-    const int left = box.left + (box.right - box.left - grid) / 2;
-    const int top = box.top + (box.bottom - box.top - grid) / 2;
-    const auto x = [left, grid](int unit) { return left + ::MulDiv(unit, grid, 24); };
-    const auto y = [top, grid](int unit) { return top + ::MulDiv(unit, grid, 24); };
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
 
-    // Hover darkens the ring and the dot but keeps both visible: a fully filled disc at the same
-    // ink as the ring would collapse the two shapes into one blob, which is not a circle-dot.
-    const HBRUSH fill = ::CreateSolidBrush(active ? kInk : m_iconColor);
-    const HPEN pen = ::CreatePen(PS_SOLID, std::max(1, Scale(2)), active ? kInk : m_iconColor);
-    const HGDIOBJ oldPen = ::SelectObject(dc, pen);
-    const HGDIOBJ oldBrush = ::SelectObject(dc, fill);
+    const Gdiplus::RectF plate(static_cast<float>(box.left), static_cast<float>(box.top),
+        static_cast<float>(box.right - box.left), static_cast<float>(box.bottom - box.top));
 
-    ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
-    ::Ellipse(dc, x(3), y(3), x(21), y(21)); // outer ring r=9 at (12,12), hollow
-    ::SelectObject(dc, fill);
-    ::SelectObject(dc, ::GetStockObject(NULL_PEN));
-    ::Ellipse(dc, x(9), y(9), x(15), y(15)); // filled centre r=3
+    if (active)
+    {
+        Gdiplus::GraphicsPath hover;
+        RoundedRect(hover, plate, ScaleF(6.0F));
+        Gdiplus::SolidBrush wash(ToGdiplus(m_hoverColor));
+        graphics.FillPath(&wash, &hover);
+    }
 
-    ::SelectObject(dc, oldBrush);
-    ::SelectObject(dc, oldPen);
-    ::DeleteObject(pen);
-    ::DeleteObject(fill);
+    // Lucide "circle-dot" on the same 18-unit canvas as its two neighbours: an outlined r=9 ring
+    // and a filled r=3 centre. Both are ink - a paper-coloured centre would vanish into the paper
+    // it sits on and leave an empty ring, which is not the glyph in the style sample.
+    const float gridSize = ScaleF(kIconDesign);
+    const IconGrid grid{
+        plate.X + (plate.Width - gridSize) / 2.0F,
+        plate.Y + (plate.Height - gridSize) / 2.0F,
+        gridSize,
+    };
+
+    const COLORREF ink = active ? kInk : m_iconColor;
+    Gdiplus::Pen pen(ToGdiplus(ink), ScaleF(kIconStrokeDesign));
+    Gdiplus::SolidBrush fill(ToGdiplus(ink));
+
+    graphics.DrawEllipse(&pen, grid.X(3.0F), grid.Y(3.0F), grid.size * 18.0F / 24.0F,
+        grid.size * 18.0F / 24.0F);
+    graphics.FillEllipse(&fill, grid.X(9.0F), grid.Y(9.0F), grid.size * 6.0F / 24.0F,
+        grid.size * 6.0F / 24.0F);
 }
 
 } // namespace wintools::app

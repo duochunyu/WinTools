@@ -110,6 +110,7 @@ target_link_libraries(WinTools PRIVATE
     wintools_core
     advapi32    # RegOpenKeyEx / RegSetValueEx for the autostart entry
     dwmapi      # rounded window corners on Windows 11
+    gdiplus     # anti-aliased sticky-note chrome (icons, page-edge rule, save time)
 )
 
 

@@ -201,7 +201,7 @@ main.cpp                      wWinMain，借用父控制台后分发子命令
 
 | 特点 | 做法 |
 |---|---|
-| 零依赖单文件 | 静态 CRT；只导入 `KERNEL32 / USER32 / GDI32 / ole32 / SHELL32 / ADVAPI32 / dwmapi` |
+| 零依赖单文件 | 静态 CRT；只导入 `KERNEL32 / USER32 / GDI32 / ole32 / SHELL32 / ADVAPI32 / dwmapi / gdiplus` |
 | 纯 COM 图形栈 | `IDesktopWallpaper` + `IWICImagingFactory`，系统自带；不用 WinRT / .NET / Windows App SDK |
 | 几何可单测 | cover 裁切、取景、摆放计划、面板几何都是静态纯函数，测试二进制直接编 `panel.cpp` |
 | 按组渲染 | 每组按自己的成员屏画布调一次 `RenderSpan`；全轮 `pieces` 攒齐后统一清理一次 |
