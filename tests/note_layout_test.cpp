@@ -129,6 +129,46 @@ WINTOOLS_TEST(NoteLayout_DefaultCascadesFromThePrimary)
     CHECK_EQ(wrapped.top, first.top);
 }
 
+WINTOOLS_TEST(NoteLayout_MonitorAtPointUsesSnapshotsNotTheOrigin)
+{
+    const std::vector<MonitorSnapshot> monitors = TwoDisplays();
+
+    CHECK_EQ(MonitorAtPoint(monitors, 100, 100), 0);
+    CHECK_EQ(MonitorAtPoint(monitors, 2200, 700), 1);
+
+    // Half-open rects: the second display starts exactly at x = 1920.
+    CHECK_EQ(MonitorAtPoint(monitors, 1920, 0), 1);
+    CHECK_EQ(MonitorAtPoint(monitors, 1919, 0), 0);
+
+    // With negative coordinates and gaps, an uncovered point must not silently become primary.
+    CHECK_EQ(MonitorAtPoint(monitors, -10, -10), -1);
+    CHECK_EQ(MonitorAtPoint(std::span<const MonitorSnapshot>{}, 100, 100), -1);
+}
+
+WINTOOLS_TEST(NoteLayout_DefaultLandsOnThePreferredDisplay)
+{
+    const std::vector<MonitorSnapshot> monitors = TwoDisplays();
+
+    const Rect first = DefaultNoteRect(monitors, 0, 1);
+    CHECK_EQ(first.left, 1920 + 96);
+    CHECK_EQ(first.top, 96);
+    CHECK_EQ(NoteHomeMonitor(first, monitors), 1);
+
+    const Rect second = DefaultNoteRect(monitors, 1, 1);
+    CHECK_EQ(second.left, first.left + 36);
+    CHECK_EQ(second.top, first.top + 36);
+
+    // -1 means the caller does not know: fall back to the primary, as before.
+    const Rect fallback = DefaultNoteRect(monitors, 0, -1);
+    CHECK_EQ(fallback.left, 96);
+    CHECK_EQ(fallback.top, 96);
+
+    // A stale index must not crash or wander: it falls back to the primary too.
+    const Rect stale = DefaultNoteRect(monitors, 0, 42);
+    CHECK_EQ(stale.left, 96);
+    CHECK_EQ(stale.top, 96);
+}
+
 WINTOOLS_TEST(NoteLayout_DefaultCopesWithNoDisplays)
 {
     const Rect rect = DefaultNoteRect(std::span<const MonitorSnapshot>{}, 0);

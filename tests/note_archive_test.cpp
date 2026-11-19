@@ -140,6 +140,40 @@ WINTOOLS_TEST(NoteArchive_LoadWithoutAFileIsEmpty)
     CHECK(NoteArchive::Load().records.empty());
 }
 
+WINTOOLS_TEST(NoteArchive_KeepsTheStar)
+{
+    NoteArchive archive;
+    archive.Add(MakeRecord(L"n1", L"plain"));
+    archive.Add(MakeRecord(L"n2", L"starred"));
+    archive.records[0].starred = true; // newest first
+
+    const NoteArchive parsed = ParseNoteArchive(FormatNoteArchive(archive));
+
+    CHECK_EQ(parsed.records.size(), static_cast<std::size_t>(2));
+    if (parsed.records.size() == 2)
+    {
+        CHECK(parsed.records[0].starred);
+        CHECK(!parsed.records[1].starred);
+        CHECK(parsed.records[1].preview == L"plain");
+    }
+}
+
+WINTOOLS_TEST(NoteArchive_ReadsARowWrittenBeforeTheStarExisted)
+{
+    // Nine fields, no star: the archive the user already has looks like this. The record loads,
+    // unstarred, with the preview and the closed time exactly where they were.
+    const NoteArchive archive =
+        ParseNoteArchive(L"closed\tn1\t0\t0\t360\t300\t2\tok\t11-17 02:31\n");
+
+    CHECK_EQ(archive.records.size(), static_cast<std::size_t>(1));
+    if (!archive.records.empty())
+    {
+        CHECK(!archive.records[0].starred);
+        CHECK(archive.records[0].preview == L"ok");
+        CHECK(archive.records[0].closedAt == L"11-17 02:31");
+    }
+}
+
 WINTOOLS_TEST(NoteArchive_SavesToDiskAndLoadsBack)
 {
     const ScratchFolder scratch;

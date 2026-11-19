@@ -30,7 +30,6 @@ namespace
 
 constexpr wchar_t kClassName[] = L"WinTools.Note.7d2a91c4";
 constexpr wchar_t kScrollClass[] = L"WinTools.NoteScroll.9e40b7d1";
-constexpr wchar_t kFooterClass[] = L"WinTools.NoteFooter.8f3c1e27";
 constexpr wchar_t kRichEditClass[] = L"RICHEDIT50W";
 
 /// Where the body's message hook hangs its state. See Note::BodyHook.
@@ -79,12 +78,17 @@ constexpr int kMarginDesign = 14;
 constexpr int kScrollWidthDesign = 4;
 constexpr int kScrollThumbDesign = 18;
 
-/// The ink is the same on all six papers: switching colour must not have to touch the colour of
+/// The ink is the same on every paper: switching colour must not have to touch the colour of
 /// the text the user already pasted in.
 constexpr COLORREF kInk = RGB(0x37, 0x35, 0x2F);
 
 /// For the one state worth interrupting a quiet note for: text that is not on disk yet.
 constexpr COLORREF kAccent = RGB(0xB4, 0x64, 0x2F);
+
+/// The lit star. A warm amber rather than pure yellow: pure yellow (0xFFFF00) reads as a warning
+/// sticker on pale papers, while this sits next to the built-in warm yellow paper without
+/// becoming it.
+constexpr COLORREF kStarGold = RGB(0xE8, 0xA3, 0x1C);
 
 /// The style sample renders the 24-unit Lucide canvas at 19 px with a 1.8 stroke, so the same 19
 /// design units reproduces both the glyph size and its weight. Drawing the full 24 filled the whole
@@ -113,9 +117,11 @@ constexpr float kCellToEm = 15.0F / 13.0F;
 enum Button
 {
     kButtonNone = -1,
-    kButtonDot = 0,
+    kButtonDelete = 0,
+    kButtonDot,
     kButtonShot,
     kButtonClose,
+    kButtonStar,
 };
 
 /// EM_SETSCROLLPOS: RichEdit scrolls in pixels, which is what lets a hand-drawn thumb land where
@@ -375,10 +381,205 @@ bool StreamingEdit(HWND control, UINT message, DWORD flags, void* cookie,
     return stream.dwError == 0 && result != 0;
 }
 
-} // namespace
+/// Copies the bytes behind a clipboard handle into `out`.
+bool ReadClipboardBytes(UINT format, std::vector<std::uint8_t>& out)
+{
+    const HANDLE handle = ::GetClipboardData(format);
+    if (handle == nullptr)
+    {
+        return false;
+    }
 
-// Defined near the other window procedures below, but CreateScrollbar needs it earlier.
-LRESULT CALLBACK FooterProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam);
+    const auto* bytes = static_cast<const std::uint8_t*>(::GlobalLock(handle));
+    if (bytes == nullptr)
+    {
+        return false;
+    }
+
+    const SIZE_T size = ::GlobalSize(handle);
+    out.assign(bytes, bytes + size);
+    ::GlobalUnlock(handle);
+    return !out.empty();
+}
+
+/// Turns a device-independent bitmap - a header followed by the pixels - into an HBITMAP.
+///
+/// CreateDIBSection is handed the clipboard's own header, so the bit depth, the row order and the
+/// colour masks are all honoured without this code knowing about them. The pixel copy below only
+/// has to find where they start, which is what the header's own size and colour table decide.
+HBITMAP BitmapFromDib(const std::vector<std::uint8_t>& dib)
+{
+    if (dib.size() < sizeof(BITMAPINFOHEADER))
+    {
+        return nullptr;
+    }
+
+    const auto* header = reinterpret_cast<const BITMAPINFOHEADER*>(dib.data());
+    if (header->biSize < sizeof(BITMAPINFOHEADER) || header->biSize > dib.size())
+    {
+        return nullptr;
+    }
+
+    if (header->biWidth <= 0 || header->biHeight == 0 || header->biBitCount == 0)
+    {
+        return nullptr;
+    }
+
+    std::size_t table = 0;
+    if (header->biSize == sizeof(BITMAPINFOHEADER) && header->biCompression == BI_BITFIELDS)
+    {
+        table = 3 * sizeof(DWORD);   // the three masks, which follow a v3 header
+    }
+    else if (header->biBitCount <= 8)
+    {
+        const DWORD colours = header->biClrUsed != 0 ? header->biClrUsed
+                                                     : (1u << header->biBitCount);
+        table = static_cast<std::size_t>(colours) * sizeof(RGBQUAD);
+    }
+
+    const std::size_t pixels = static_cast<std::size_t>(header->biSize) + table;
+    const std::size_t stride
+        = ((static_cast<std::size_t>(header->biWidth) * header->biBitCount + 31) / 32) * 4;
+    const std::size_t rows = static_cast<std::size_t>(
+        header->biHeight < 0 ? -header->biHeight : header->biHeight);
+
+    if (pixels >= dib.size() || dib.size() - pixels < stride * rows)
+    {
+        return nullptr;
+    }
+
+    HDC screen = ::GetDC(nullptr);
+    void* bits = nullptr;
+    HBITMAP section = ::CreateDIBSection(screen, reinterpret_cast<const BITMAPINFO*>(dib.data()),
+        DIB_RGB_COLORS, &bits, nullptr, 0);
+    ::ReleaseDC(nullptr, screen);
+
+    if (section == nullptr || bits == nullptr)
+    {
+        return nullptr;
+    }
+
+    std::memcpy(bits, dib.data() + pixels, stride * rows);
+    return section;
+}
+
+/// Reads an HBITMAP as top-down 32-bit BGRA, which is the one layout the PNG encoder takes.
+bool BitmapToBgra(HBITMAP bitmap, std::vector<std::uint8_t>& pixels, int& width, int& height)
+{
+    BITMAP metrics{};
+    if (::GetObjectW(bitmap, sizeof(metrics), &metrics) == 0 || metrics.bmWidth <= 0
+        || metrics.bmHeight <= 0)
+    {
+        return false;
+    }
+
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = metrics.bmWidth;
+    info.bmiHeader.biHeight = -metrics.bmHeight;   // negative: rows come out top-down, as PNG wants
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+
+    const std::size_t stride = static_cast<std::size_t>(metrics.bmWidth) * 4;
+    pixels.resize(stride * static_cast<std::size_t>(metrics.bmHeight));
+
+    HDC screen = ::GetDC(nullptr);
+    const int rows = ::GetDIBits(screen, bitmap, 0, static_cast<UINT>(metrics.bmHeight),
+        pixels.data(), &info, DIB_RGB_COLORS);
+    ::ReleaseDC(nullptr, screen);
+
+    if (rows == 0)
+    {
+        return false;
+    }
+
+    // GDI leaves the alpha byte at zero when asked for 32 bits. A PNG that honours it would be a
+    // hole in the note, and a screenshot has no transparency worth keeping, so it is filled in.
+    for (std::size_t index = 3; index < pixels.size(); index += 4)
+    {
+        pixels[index] = 0xFF;
+    }
+
+    width = metrics.bmWidth;
+    height = metrics.bmHeight;
+    return true;
+}
+
+/// Reads whatever picture is on the clipboard, in any of the shapes a capture tool may leave it.
+///
+/// The formats are tried in the order that costs least: a PNG goes through untouched, a DIB and an
+/// HBITMAP are normalised through GDI, and anything else is not a picture this note can use.
+bool ReadClipboardPicture(CapturedImage& image)
+{
+    if (::OpenClipboard(nullptr) == FALSE)
+    {
+        return false;
+    }
+
+    bool ok = false;
+
+    const UINT pngFormat = PngClipboardFormat();
+    std::vector<std::uint8_t> png;
+    if (pngFormat != 0 && ReadClipboardBytes(pngFormat, png))
+    {
+        // A PNG is already the form the insert wants; only the size in its IHDR is needed, which
+        // sits at a fixed offset: 8 signature bytes, 4 for the chunk length, 4 for "IHDR", then
+        // width and height as big-endian 32-bit values.
+        static constexpr std::uint8_t kSignature[8]
+            = { 0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n' };
+        if (png.size() > 24 && std::memcmp(png.data(), kSignature, sizeof(kSignature)) == 0)
+        {
+            const auto* header = png.data() + 16;
+            const int width = (header[0] << 24) | (header[1] << 16) | (header[2] << 8) | header[3];
+            const int height = (header[4] << 24) | (header[5] << 16) | (header[6] << 8) | header[7];
+            if (width > 0 && height > 0)
+            {
+                image.png = std::move(png);
+                image.width = width;
+                image.height = height;
+                ok = true;
+            }
+        }
+    }
+
+    HBITMAP owned = nullptr;
+    HBITMAP bitmap = nullptr;
+    if (!ok)
+    {
+        std::vector<std::uint8_t> dib;
+        if (ReadClipboardBytes(CF_DIB, dib))
+        {
+            owned = BitmapFromDib(dib);
+            bitmap = owned;
+        }
+
+        if (bitmap == nullptr)
+        {
+            bitmap = static_cast<HBITMAP>(::GetClipboardData(CF_BITMAP));
+        }
+    }
+
+    std::vector<std::uint8_t> pixels;
+    int width = 0;
+    int height = 0;
+    if (!ok && bitmap != nullptr && BitmapToBgra(bitmap, pixels, width, height))
+    {
+        ok = EncodePng(pixels.data(), width, height, image.png);
+        image.width = width;
+        image.height = height;
+    }
+
+    if (owned != nullptr)
+    {
+        ::DeleteObject(owned);
+    }
+
+    ::CloseClipboard();
+    return ok;
+}
+
+} // namespace
 
 Note::~Note()
 {
@@ -484,7 +685,6 @@ void Note::Destroy()
     m_window = nullptr;
     m_body = nullptr;
     m_scroll = nullptr;
-    m_footer = nullptr;
 
     // Create() builds these per note, so closing a note has to give them back: a note opened and
     // closed a few dozen times would otherwise hold GDI objects for the life of the process.
@@ -537,11 +737,10 @@ void Note::ApplyTheme(int theme)
         ::SendMessageW(m_body, EM_SETBKGNDCOLOR, 0, static_cast<LPARAM>(m_paperColor));
     }
 
-    // The footer keeps its own paper colour, so a theme change has to reach it too.
-    if (m_footer != nullptr)
+    // The body paints its own paper, so a theme change has to reach it as well.
+    if (m_body != nullptr)
     {
-        ::SetWindowLongPtrW(m_footer, GWLP_USERDATA, static_cast<LONG_PTR>(m_paperColor));
-        ::InvalidateRect(m_footer, nullptr, FALSE);
+        ::InvalidateRect(m_body, nullptr, TRUE);
     }
 
     if (m_window != nullptr)
@@ -564,6 +763,13 @@ void Note::SetTheme(int theme)
     {
         themeChanged(*this);
     }
+}
+
+void Note::RepaintPaper()
+{
+    // No themeChanged: the index did not move, only the colour that index resolves to. Telling the
+    // manager would rewrite the index file with the same value.
+    ApplyTheme(m_theme);
 }
 
 void Note::Metrics()
@@ -687,6 +893,32 @@ void Note::ApplyLineSpacing()
     ::SendMessageW(m_body, EM_SETPARAFORMAT, SCF_ALL, reinterpret_cast<LPARAM>(&spacing));
 }
 
+/// Where the body and the note's own scrollbar stop. Everything below this line is paper the note
+/// paints itself, and nothing else may touch it - see InvalidateMargin.
+int Note::BodyBottom(int clientHeight) const
+{
+    const int top = m_headerHeight + Scale(kBodyTopDesign);
+
+    // Paper below the last line as well as above the first one: a note whose text runs into the
+    // bottom edge reads as a text box, not as a sheet.
+    return std::max(top + 1, clientHeight - m_border - Scale(kBottomPadDesign));
+}
+
+void Note::InvalidateMargin()
+{
+    if (m_window == nullptr)
+    {
+        return;
+    }
+
+    RECT client{};
+    ::GetClientRect(m_window, &client);
+
+    const int bottom = BodyBottom(client.bottom - client.top);
+    const RECT margin{ 0, bottom, client.right, client.bottom };
+    ::InvalidateRect(m_window, &margin, FALSE);
+}
+
 void Note::LayoutChildren()
 {
     RECT client{};
@@ -695,10 +927,7 @@ void Note::LayoutChildren()
     const int width = client.right - client.left;
     const int height = client.bottom - client.top;
     const int top = m_headerHeight + Scale(kBodyTopDesign);
-
-    // Paper below the last line as well as above the first one: a note whose text runs into the
-    // bottom edge reads as a text box, not as a sheet.
-    const int bottom = std::max(top + 1, height - m_border - Scale(kBottomPadDesign));
+    const int bottom = BodyBottom(height);
 
     if (m_body != nullptr)
     {
@@ -718,21 +947,29 @@ void Note::LayoutChildren()
             Scale(kScrollWidthDesign), std::max(1, bottom - top), TRUE);
     }
 
-    // The footer starts exactly where the text and our own scrollbar stop. It covers only the
-    // margin, so nothing the user typed can be hidden by it.
-    if (m_footer != nullptr)
-    {
-        ::SetWindowPos(m_footer, HWND_TOP, 0, bottom, width, std::max(1, height - bottom),
-            SWP_NOACTIVATE);
-    }
+    // The margin below `bottom` belongs to the note and to nothing else: the body stops there, so
+    // there is no child window over it, and the paper and the bottom border are painted by the
+    // note itself. Never put a child here again - even a paper-coloured one, which is what used to
+    // cover this strip, turns into a grey band the moment its paint is skipped: with
+    // WS_CLIPCHILDREN the note does not paint under a child, so a child that misses a paint leaves
+    // a hole that no later WM_PAINT fills in.
 
     const int button = Scale(kButtonDesign);
     const int buttonTop = (m_headerHeight - button) / 2;
     const int gap = Scale(kButtonGapDesign);
 
     // Walked right to left from one inset, with a constant step: the old version measured each box
-    // from the glyph before it, which made the pitch 31 / 34 instead of a single number.
+    // from the glyph before it, which made the pitch 31 / 34 instead of a single number. Physical
+    // order from the left edge is delete | dot | shot | close | star - the destructive button sits
+    // at the far end of the row, away from the cluster a hand already knows, and the star closes
+    // the row because it is the one action worth a second look either way.
     int right = width - Scale(kSideInsetDesign) - m_border;
+
+    m_star.right = right;
+    m_star.left = right - button;
+    m_star.top = buttonTop;
+    m_star.bottom = buttonTop + button;
+    right = m_star.left - gap;
 
     m_close.right = right;
     m_close.left = right - button;
@@ -750,6 +987,12 @@ void Note::LayoutChildren()
     m_dot.left = right - Scale(kDotDesign);
     m_dot.top = buttonTop;
     m_dot.bottom = buttonTop + button;
+    right = m_dot.left - gap;
+
+    m_delete.right = right;
+    m_delete.left = right - button;
+    m_delete.top = buttonTop;
+    m_delete.bottom = buttonTop + button;
 
     ::InvalidateRect(m_window, nullptr, FALSE);
     UpdateScrollbar();
@@ -902,14 +1145,19 @@ std::wstring Note::Preview() const
     std::wstring flat;
     for (wchar_t ch : raw)
     {
-        if (ch == L'\r' || ch == L'\n' || ch == L'\t')
+        // U+FFFC is the RichEdit placeholder for an embedded object - a pasted screenshot, say.
+        // It renders as an empty box in a plain-text row, so it is dropped rather than flattened
+        // into a space: a picture-only note previews as empty, never as a stray glyph. U+000B is
+        // a soft line break (Shift+Enter), U+000C a page break; both fold into the spaces that
+        // the paragraph breaks already become.
+        if (ch == L'\r' || ch == L'\n' || ch == L'\t' || ch == L'\u000B' || ch == L'\u000C')
         {
             if (!flat.empty() && flat.back() != L' ')
             {
                 flat.push_back(L' ');
             }
         }
-        else if (flat.size() < kCap)
+        else if (ch != L'\uFFFC' && flat.size() < kCap)
         {
             flat.push_back(ch);
         }
@@ -921,6 +1169,54 @@ std::wstring Note::Preview() const
     }
 
     return flat;
+}
+
+bool Note::HasContent() const
+{
+    if (m_body == nullptr)
+    {
+        return false;
+    }
+
+    const LONG length = static_cast<LONG>(::SendMessageW(m_body, WM_GETTEXTLENGTH, 0, 0));
+    if (length <= 0)
+    {
+        return false;
+    }
+
+    // The check reads the text the same way Preview does, but it is looking for anything that
+    // survives being looked at: a non-space character, or the object placeholder a pasted picture
+    // leaves behind. A note holding only that picture previews as empty, and dropping it would
+    // throw the picture away.
+    const std::size_t cap = std::min<std::size_t>(static_cast<std::size_t>(length) + 1, 8192);
+    std::wstring raw(cap, L'\0');
+    GETTEXTEX get{};
+    get.cb = static_cast<DWORD>(raw.size() * sizeof(wchar_t));
+    get.codepage = 1200;
+    get.flags = GT_DEFAULT;
+    ::SendMessageW(m_body, EM_GETTEXTEX, reinterpret_cast<WPARAM>(&get),
+        reinterpret_cast<LPARAM>(raw.data()));
+
+    for (const wchar_t ch : raw)
+    {
+        if (ch == L'\0')
+        {
+            break;
+        }
+
+        if (ch == L'\uFFFC')
+        {
+            return true;
+        }
+
+        if (ch != L' ' && ch != L'\t' && ch != L'\r' && ch != L'\n' && ch != L'\u000B'
+            && ch != L'\u000C')
+        {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 void Note::MarkDirty()
@@ -1015,7 +1311,48 @@ void Note::InsertPicture(const std::vector<std::uint8_t>& png, int width, int he
         return;
     }
 
+    // The picture goes in at the caret, and the caret can be on a line that was not on screen: a
+    // note whose text already overflows looks untouched after the insert, and the picture seems to
+    // have gone nowhere. Scrolling to the caret is what turns "nothing happened" into the picture.
+    ::SendMessageW(m_body, EM_SCROLLCARET, 0, 0);
+    ::InvalidateRect(m_body, nullptr, FALSE);
+
     MarkDirty();
+}
+
+bool Note::PasteClipboardPicture()
+{
+    CapturedImage image;
+    if (m_body == nullptr || !ReadClipboardPicture(image))
+    {
+        // Worth a line: a paste that does nothing is otherwise indistinguishable from a keystroke
+        // that never arrived, and the next time it is reported this says which half it was.
+        util::LogWarn(L"sticky note {}: the paste left the body unchanged and the clipboard holds no "
+                      L"picture this note can read",
+            m_id);
+        return false;
+    }
+
+    util::LogInfo(L"sticky note {}: pasted a {}x{} picture from the clipboard", m_id, image.width,
+        image.height);
+    InsertPicture(image.png, image.width, image.height);
+    return true;
+}
+
+void Note::CaptureScreenshot()
+{
+    if (m_window == nullptr)
+    {
+        return;
+    }
+
+    // The hotkey can be pressed from any application. Raising the note first means the caret that
+    // is remembered below is this note's, the overlay opens over the note rather than under
+    // whatever was in front, and the picture lands somewhere the user is looking.
+    ::SetForegroundWindow(m_window);
+    Focus();
+
+    TakeScreenshot();
 }
 
 void Note::TakeScreenshot()
@@ -1063,6 +1400,46 @@ LRESULT Note::HandleBodyMessage(
 
     switch (message)
     {
+        case WM_KEYDOWN:
+            {
+                // Ctrl+V does not arrive as WM_PASTE: the control reads the key itself and pastes
+                // inside its own handling, which is why watching WM_PASTE alone caught the message
+                // and missed the keystroke. Translating it into WM_PASTE puts both on the one path
+                // that is watched, and RichEdit answers that message with the same paste it would
+                // have done here. The other Ctrl+V shapes - Ctrl+Shift+V for unformatted text,
+                // Ctrl+Alt+V for paste special - are left to the control.
+                const bool plain = ::GetKeyState(VK_CONTROL) < 0 && ::GetKeyState(VK_SHIFT) >= 0
+                    && ::GetKeyState(VK_MENU) >= 0;
+                if (wparam == 'V' && plain)
+                {
+                    ::SendMessageW(body, WM_PASTE, 0, 0);
+                    return 0;
+                }
+            }
+            break;
+
+        case WM_PASTE:
+            {
+                // RichEdit pastes a bitmap by handing it to OLE, and a handle it cannot use is
+                // dropped without a word: Ctrl+V moves nothing, the caret does not even blink, and
+                // the note gives no reason. Measured on this machine - a bitmap whose pixels sit in
+                // a DIB section the copying process had already freed is accepted by the clipboard
+                // and ignored by the paste, 424 characters before and after.
+                //
+                // So the paste is watched. If the document did not grow, the picture is taken off
+                // the clipboard here and inserted through the same path the camera button uses -
+                // PNG bytes into RTF - which is code this project controls from end to end.
+                const LRESULT length = ::SendMessageW(body, WM_GETTEXTLENGTH, 0, 0);
+                const LRESULT result = forward();
+                if (::SendMessageW(body, WM_GETTEXTLENGTH, 0, 0) != length)
+                {
+                    return result;
+                }
+
+                PasteClipboardPicture();
+                return result;
+            }
+
         case WM_LBUTTONDOWN:
             {
                 // A press in the text puts the swatches away, exactly as a press anywhere else on
@@ -1173,15 +1550,30 @@ LRESULT Note::HandleBodyMessage(
             m_bodyFocused = message == WM_SETFOCUS;
             InvalidateHeader();
             ::InvalidateRect(body, nullptr, FALSE);
+            InvalidateMargin();
             break;
+
+        case WM_SIZE:
+            {
+                // RichEdit takes this path when it shows or hides a scrollbar, and a frame change
+                // inside a window means a fresh surface for the parent too: the note's own bottom
+                // margin comes back from the compositor unpainted. Repainting it is the only thing
+                // that fills it back in.
+                const LRESULT result = forward();
+                InvalidateMargin();
+                return result;
+            }
 
         case WM_VSCROLL:
         case WM_MOUSEWHEEL:
             {
                 // RichEdit scrolls itself and tells nobody, so the thumb is refreshed around the
-                // call instead of being told about it afterwards.
+                // call instead of being told about it afterwards. Scrolling is also the moment the
+                // system repaints the frame it should not have: the margin comes back grey until
+                // the note paints over it.
                 const LRESULT result = forward();
                 UpdateScrollbar();
+                InvalidateMargin();
                 return result;
             }
 
@@ -1422,34 +1814,6 @@ void Note::CreateScrollbar()
         ::SetWindowPos(m_scroll, HWND_TOP, 0, 0, 0, 0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
-
-    static bool footerRegistered = false;
-    if (!footerRegistered)
-    {
-        WNDCLASSEXW windowClass{};
-        windowClass.cbSize = sizeof(windowClass);
-        windowClass.lpfnWndProc = &FooterProc;
-        windowClass.hInstance = m_instance;
-        windowClass.hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
-        windowClass.lpszClassName = kFooterClass;
-
-        if (::RegisterClassExW(&windowClass) == 0 && ::GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
-        {
-            util::LogError(L"sticky note: cannot register the footer class");
-            return;
-        }
-
-        footerRegistered = true;
-    }
-
-    m_footer = ::CreateWindowExW(WS_EX_TRANSPARENT, kFooterClass, L"", WS_CHILD, 0, 0, 0, 0,
-        m_window, nullptr, m_instance, nullptr);
-    if (m_footer != nullptr)
-    {
-        ::SetWindowLongPtrW(m_footer, GWLP_USERDATA, static_cast<LONG_PTR>(m_paperColor));
-        ::SetWindowPos(m_footer, HWND_TOP, 0, 0, 0, 0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    }
 }
 
 void Note::UpdateScrollbar()
@@ -1549,6 +1913,10 @@ void Note::ScrollToPixel(int pixel)
 
     POINTL point{ 0, target };
     ::SendMessageW(m_body, kEditSetScrollPos, 0, reinterpret_cast<LPARAM>(&point));
+
+    // Dragging the thumb scrolls RichEdit without a WM_VSCROLL, so the margin has to be nudged here
+    // as well: same reason as in BodyProc.
+    InvalidateMargin();
 }
 
 void Note::ScrollbarPage(bool down)
@@ -1560,42 +1928,7 @@ void Note::ScrollbarPage(bool down)
 
     ::SendMessageW(m_body, WM_VSCROLL, MAKEWPARAM(down ? SB_PAGEDOWN : SB_PAGEUP, 0), 0);
     UpdateScrollbar();
-}
-
-// The strip of paper below the text. RichEdit draws its own scrollbars, and when the body gets the
-// focus a horizontal one can appear in this margin - a grey Windows strip across the bottom of a
-// sheet. This child covers the margin with the paper colour after the body has painted, and is
-// transparent to the mouse, so the note still sees clicks there. It changes nothing about the text
-// layout or about our own three-pixel scrollbar, which stops exactly where this starts.
-LRESULT CALLBACK FooterProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam)
-{
-    switch (message)
-    {
-        case WM_ERASEBKGND:
-            return 1;
-
-        case WM_PAINT:
-            {
-                PAINTSTRUCT paint{};
-                const HDC dc = ::BeginPaint(window, &paint);
-                RECT client{};
-                ::GetClientRect(window, &client);
-                const HBRUSH brush = ::CreateSolidBrush(
-                    static_cast<COLORREF>(::GetWindowLongPtrW(window, GWLP_USERDATA)));
-                ::FillRect(dc, &client, brush);
-                ::DeleteObject(brush);
-                ::EndPaint(window, &paint);
-            }
-            return 0;
-
-        case WM_NCHITTEST:
-            return HTTRANSPARENT;
-
-        default:
-            break;
-    }
-
-    return ::DefWindowProcW(window, message, wparam, lparam);
+    InvalidateMargin();
 }
 
 LRESULT CALLBACK Note::ScrollProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam)
@@ -1767,6 +2100,28 @@ void Note::FireButton(int button)
 
     switch (button)
     {
+        case kButtonDelete:
+        {
+            // The confirmation lives here, not in the owner: the owner must only ever see a settled
+            // decision, and a second dialog layered over the note would be one more thing to
+            // dismiss. MB_ICONWARNING because the undo this dialog guards against does not exist -
+            // unlike the close button, this path retires nothing.
+            const std::wstring text = util::i18n::Format(L"删除这条便签？\n\n正文将被永久删除，无法恢复。");
+            const std::wstring caption{ util::i18n::Text(L"删除便签") };
+            const int answer =
+                ::MessageBoxW(m_window, text.c_str(), caption.c_str(),
+                    MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+            if (answer != IDYES)
+            {
+                return;
+            }
+            if (deleteRequested)
+            {
+                deleteRequested(*this);
+            }
+            break;
+        }
+
         case kButtonDot:
             OpenPalette();
             break;
@@ -1782,8 +2137,32 @@ void Note::FireButton(int button)
             }
             break;
 
+        case kButtonStar:
+            m_starred = !m_starred;
+            InvalidateHeader();
+            util::LogInfo(L"sticky note {}: star {}", m_id, m_starred ? L"on" : L"off");
+            if (starChanged)
+            {
+                starChanged(*this);
+            }
+            break;
+
         default:
             break;
+    }
+}
+
+void Note::SetStarred(bool starred)
+{
+    if (m_starred == starred)
+    {
+        return;
+    }
+
+    m_starred = starred;
+    if (m_window != nullptr)
+    {
+        InvalidateHeader();
     }
 }
 
@@ -1807,7 +2186,9 @@ void Note::OpenPalette()
     const POINT anchor{ m_dot.left, m_dot.bottom + Scale(2) };
 
     m_palette.closed = [this] { InvalidateHeader(); };
-    m_palette.Show(m_window, m_dpi, anchor, m_headerColor, m_theme,
+    // The chip is painted in the paper tone with no frame of its own, so the swatches read as part
+    // of the sheet they sit on rather than as a dialog stamped over it.
+    m_palette.Show(m_window, m_dpi, anchor, m_paperColor, m_theme,
         [this](int picked) { SetTheme(picked); });
 }
 
@@ -1933,6 +2314,24 @@ LRESULT Note::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam)
                 return 0;
             }
             break;
+
+        case WM_NCACTIVATE:
+            // Since the client covers the whole window there is no frame left to draw, but
+            // DefWindowProc still paints one into the window surface on activation and after a
+            // scroll: six rows of #b4b4b4 along the bottom edge, plus a wider wedge in the
+            // bottom-right corner. It sits under the paper and over it depending on who painted
+            // last, which is why the note looked like it had an edit-box frame. Nothing here is
+            // the system's to draw, so it does not get to draw it.
+            //
+            // The painting is not all it does: this is also where Windows invalidates the window so
+            // that whatever covered it gets repainted - the capture overlay, another app, a menu.
+            // Skip that and the note comes back with whole rectangles of desktop showing through
+            // its paper. So the invalidation is done here by hand.
+            ::RedrawWindow(m_window, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
+            return TRUE;
+
+        case WM_NCPAINT:
+            return 0;
 
         case WM_NCHITTEST:
             return HitTest(POINT{ GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam) });
@@ -2088,6 +2487,7 @@ LRESULT Note::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam)
                 // The text is what decides whether the note has anything to scroll, and this is
                 // the only notification a note ever gets that it changed.
                 UpdateScrollbar();
+                InvalidateMargin();
                 return 0;
             }
             break;
@@ -2107,6 +2507,9 @@ LRESULT Note::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam)
                     ::SetFocus(m_body);
                 }
             }
+
+            // Activation is one of the moments the system repaints a frame the note does not have.
+            InvalidateMargin();
             return 0;
 
         case WM_SETFOCUS:
@@ -2117,6 +2520,19 @@ LRESULT Note::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam)
             return 0;
 
         case WM_ERASEBKGND:
+            {
+                // Never leave a pixel of this window to whatever was in the redirection surface:
+                // an erased region that no later WM_PAINT covers shows the desktop through a note
+                // that is supposed to be one opaque sheet of paper.
+                if (m_paper == nullptr)
+                {
+                    return 1;
+                }
+
+                RECT client{};
+                ::GetClientRect(m_window, &client);
+                ::FillRect(reinterpret_cast<HDC>(wparam), &client, m_paper);
+            }
             return 1;
 
         case WM_PAINT:
@@ -2162,6 +2578,14 @@ int Note::ButtonAt(POINT client) const
     if (inside(m_close))
     {
         return kButtonClose;
+    }
+    if (inside(m_star))
+    {
+        return kButtonStar;
+    }
+    if (inside(m_delete))
+    {
+        return kButtonDelete;
     }
 
     return kButtonNone;
@@ -2258,12 +2682,19 @@ void Note::PaintChrome(HDC dc)
 {
     // S3 "page-edge rule": the paper stays one unbroken sheet. The save time is the only thing
     // drawn unconditionally - it is the one line on a note worth reading at a glance - and a short
-    // rule at its left turns it from decoration into metadata. The three icons arrive on hover with
-    // no plate behind them: they sit straight on the paper, the way a pencil mark would.
+    // rule at its left turns it from decoration into metadata. The icons arrive on hover with no
+    // plate behind them: they sit straight on the paper, the way a pencil mark would.
     PaintTimestamp(dc);
 
+    // A starred note keeps its star visible with the rest of the chrome away: the star is a flag
+    // the user set on purpose, and a flag that hides itself stops being one. It still draws in its
+    // resting form - no hover wash while the pointer is not there to warrant one.
     if (!ChromeVisible())
     {
+        if (m_starred)
+        {
+            PaintStarButton(dc, m_star, false);
+        }
         return;
     }
 
@@ -2273,6 +2704,9 @@ void Note::PaintChrome(HDC dc)
         dc, m_shot, kButtonShot, m_hover == kButtonShot || (held && m_pressedButton == kButtonShot));
     PaintIconButton(dc, m_close, kButtonClose,
         m_hover == kButtonClose || (held && m_pressedButton == kButtonClose));
+    PaintIconButton(dc, m_delete, kButtonDelete,
+        m_hover == kButtonDelete || (held && m_pressedButton == kButtonDelete));
+    PaintStarButton(dc, m_star, m_hover == kButtonStar || (held && m_pressedButton == kButtonStar));
 }
 
 void Note::PaintTimestamp(HDC dc)
@@ -2392,6 +2826,33 @@ void Note::PaintIconButton(HDC dc, const RECT& box, int icon, bool active)
         graphics.DrawLine(&pen, grid.X(6.0F), grid.Y(6.0F), grid.X(18.0F), grid.Y(18.0F));
         graphics.DrawLine(&pen, grid.X(18.0F), grid.Y(6.0F), grid.X(6.0F), grid.Y(18.0F));
     }
+    else if (icon == kButtonDelete)
+    {
+        // Lucide "flame", transcribed segment by segment from the upstream SVG rather than
+        // approximated - an earlier teardrop guess read as a water drop, which is the wrong
+        // element for a destructive button. The path: the inner tongue's little circle at the
+        // left, the climb to the tip at (12,3), the right side sweeping down to (19,15), the
+        // shallow 7-unit bowl across the bottom, and the left edge climbing back into the tongue.
+        Gdiplus::GraphicsPath flame;
+        flame.AddBezier(grid.X(8.5F), grid.Y(14.5F), grid.X(9.88F), grid.Y(14.5F),
+            grid.X(11.0F), grid.Y(13.38F), grid.X(11.0F), grid.Y(12.0F));
+        flame.AddBezier(grid.X(11.0F), grid.Y(12.0F), grid.X(11.0F), grid.Y(10.62F),
+            grid.X(10.5F), grid.Y(10.0F), grid.X(10.0F), grid.Y(9.0F));
+        flame.AddBezier(grid.X(10.0F), grid.Y(9.0F), grid.X(8.93F), grid.Y(6.86F),
+            grid.X(9.78F), grid.Y(4.95F), grid.X(12.0F), grid.Y(3.0F));
+        flame.AddBezier(grid.X(12.0F), grid.Y(3.0F), grid.X(12.5F), grid.Y(5.5F),
+            grid.X(14.0F), grid.Y(7.9F), grid.X(16.0F), grid.Y(9.5F));
+        flame.AddBezier(grid.X(16.0F), grid.Y(9.5F), grid.X(18.0F), grid.Y(11.1F),
+            grid.X(19.0F), grid.Y(13.0F), grid.X(19.0F), grid.Y(15.0F));
+        flame.AddArc(grid.X(5.0F), grid.Y(8.0F), grid.size * 14.0F / 24.0F,
+            grid.size * 14.0F / 24.0F, 0.0F, 180.0F);
+        flame.AddBezier(grid.X(5.0F), grid.Y(15.0F), grid.X(5.0F), grid.Y(13.85F),
+            grid.X(5.43F), grid.Y(12.71F), grid.X(6.0F), grid.Y(12.0F));
+        flame.AddBezier(grid.X(6.0F), grid.Y(12.0F), grid.X(6.0F), grid.Y(13.38F),
+            grid.X(7.12F), grid.Y(14.5F), grid.X(8.5F), grid.Y(14.5F));
+        flame.CloseFigure();
+        graphics.DrawPath(&pen, &flame);
+    }
     else
     {
         // Lucide "camera", transcribed from the sample's SVG rather than approximated: body
@@ -2470,6 +2931,70 @@ void Note::PaintColourDot(HDC dc, const RECT& box, bool active)
         grid.size * 18.0F / 24.0F);
     graphics.FillEllipse(&fill, grid.X(9.0F), grid.Y(9.0F), grid.size * 6.0F / 24.0F,
         grid.size * 6.0F / 24.0F);
+}
+
+void Note::PaintStarButton(HDC dc, const RECT& box, bool active)
+{
+    if (!GdiplusReady())
+    {
+        return;
+    }
+
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+
+    const Gdiplus::RectF plate(static_cast<float>(box.left), static_cast<float>(box.top),
+        static_cast<float>(box.right - box.left), static_cast<float>(box.bottom - box.top));
+
+    if (active)
+    {
+        Gdiplus::GraphicsPath hover;
+        RoundedRect(hover, plate, ScaleF(6.0F));
+        Gdiplus::SolidBrush wash(ToGdiplus(m_hoverColor));
+        graphics.FillPath(&wash, &hover);
+    }
+
+    // Lucide "star": the ten-point outline straight from the upstream SVG, transcribed onto the
+    // same 18-unit canvas as the other glyphs. Starred, the polygon is filled gold; plain, it is
+    // the same thin outline the neighbouring icons carry.
+    const float gridSize = ScaleF(kIconDesign);
+    const IconGrid grid{
+        plate.X + (plate.Width - gridSize) / 2.0F,
+        plate.Y + (plate.Height - gridSize) / 2.0F,
+        gridSize,
+    };
+
+    static constexpr float kPoints[][2] = {
+        { 12.0F, 2.0F },  { 15.09F, 8.26F }, { 22.0F, 9.27F }, { 17.0F, 14.14F },
+        { 18.18F, 21.02F }, { 12.0F, 17.77F }, { 5.82F, 21.02F }, { 7.0F, 14.14F },
+        { 2.0F, 9.27F },  { 8.91F, 8.26F },
+    };
+
+    Gdiplus::PointF mapped[10];
+    for (int index = 0; index < 10; ++index)
+    {
+        mapped[index] = Gdiplus::PointF(grid.X(kPoints[index][0]), grid.Y(kPoints[index][1]));
+    }
+
+    Gdiplus::GraphicsPath star;
+    star.AddLines(mapped, 10);
+    star.CloseFigure();
+
+    if (m_starred)
+    {
+        Gdiplus::SolidBrush gold(ToGdiplus(kStarGold));
+        graphics.FillPath(&gold, &star);
+    }
+    else
+    {
+        const COLORREF ink = active ? kInk : m_iconColor;
+        Gdiplus::Pen pen(ToGdiplus(ink), ScaleF(kIconStrokeDesign));
+        pen.SetStartCap(Gdiplus::LineCapRound);
+        pen.SetEndCap(Gdiplus::LineCapRound);
+        pen.SetLineJoin(Gdiplus::LineJoinRound);
+        graphics.DrawPath(&pen, &star);
+    }
 }
 
 } // namespace wintools::app

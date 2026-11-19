@@ -2,7 +2,6 @@
 
 #include <Windows.h>
 
-#include <deque>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -116,10 +115,6 @@ private:
     /// Red status line. Cleared by the next action that succeeds, so a fixed problem stops
     /// shouting without the user having to do anything about it.
     bool m_statusIsError{};
-
-    /// Newest first, three at most. A failure stays here after a later success overwrote the
-    /// status line - which is the only reason it exists.
-    std::deque<StatusEntry> m_history;
 
     std::vector<core::Group> m_groups;
     int m_activeSlot{};

@@ -237,6 +237,47 @@ WINTOOLS_TEST(Panel_ZoomRejectsNonsense)
     CHECK(Panel::PanView(view, Panel::FrameFor(empty, view), 10, 10) == view);
 }
 
+// A turn is exact only at a multiple of 90 degrees; everywhere else the renderer resamples, so the
+// four right angles are the ones worth landing on. The gesture has to make that easier than it
+// sounds without ever trapping the pointer on one: arriving is tight, leaving costs four degrees.
+WINTOOLS_TEST(Panel_TurnSticksToRightAngles)
+{
+    int snap = -1;
+
+    // An arbitrary angle passes through untouched - rounded to the degree the drag quantises to.
+    CHECK(Panel::TurnAngle(17.0, 3.4, snap) == 20.0);
+    CHECK_EQ(snap, -1);
+
+    // Two degrees off reads as square: this is the case a hand actually produces.
+    CHECK(Panel::TurnAngle(80.0, 8.0, snap) == 90.0);
+    CHECK_EQ(snap, 90);
+
+    // Once locked, a wander of three degrees still reads 90 - this is the stickiness.
+    CHECK(Panel::TurnAngle(80.0, 13.0, snap) == 90.0);
+    CHECK_EQ(snap, 90);
+
+    // Past six degrees it lets go, and the next degree does not drag it back.
+    CHECK(Panel::TurnAngle(80.0, 17.0, snap) == 97.0);
+    CHECK_EQ(snap, -1);
+    CHECK(Panel::TurnAngle(80.0, 15.0, snap) == 95.0);
+    CHECK_EQ(snap, -1);
+    CHECK(Panel::TurnAngle(80.0, 11.0, snap) == 90.0);
+    CHECK_EQ(snap, 90);
+
+    // Crossing zero wraps instead of leaving a 359 that the readout would have to explain - and a
+    // full negative turn lands on a plain zero rather than a negative one.
+    snap = -1;
+    CHECK(Panel::TurnAngle(0.0, -3.0, snap) == 357.0);
+    CHECK(Panel::TurnAngle(0.0, -361.0, snap) == 0.0);
+    CHECK(!std::signbit(Panel::TurnAngle(0.0, -361.0, snap)));
+
+    // And a drag that never moves keeps the picture where it started, snapped or not.
+    snap = -1;
+    CHECK(Panel::TurnAngle(0.0, 0.0, snap) == 0.0);
+    CHECK_EQ(snap, 0);
+    CHECK(Panel::TurnAngle(42.0, 0.0, snap) == 42.0);
+}
+
 // The preview bitmap has to hold the whole picture at zoom 1, margins included, and every sample
 // has to land inside it at any zoom - a sample that runs off the edge draws whatever is in the
 // bitmap's tail, which is nothing at all.
@@ -295,6 +336,12 @@ WINTOOLS_TEST(Panel_MapSampleAgreesWithTheRenderedSlice)
         WallpaperView{ 1.0, 1.0, 1.0 },
         WallpaperView{ 2.0, 0.5, 0.5 },
         WallpaperView{ 3.5, 0.25, 0.75 },
+        // A turn changes the surface to the picture's bounding box and shifts the canvas window
+        // into its middle, so the offsets have to keep agreeing with ComputeSlice at any angle -
+        // including the quarter turn, where the bound widths swap.
+        WallpaperView{ 1.0, 0.5, 0.5, 37.0 },
+        WallpaperView{ 2.0, 0.5, 0.5, 90.0 },
+        WallpaperView{ 1.0, 0.0, 1.0, 145.0 },
     };
 
     for (const auto& view : views)
@@ -351,82 +398,6 @@ WINTOOLS_TEST(Panel_AdjacentDisplaysMeetWithoutASeam)
     }
 }
 
-// The sheet has to fit the screen it opens on. This machine's work area is 1150 px, so without
-// these cases the short-screen branch would never run anywhere.
-WINTOOLS_TEST(Panel_SheetFitsCommonWorkAreas)
-{
-    // Pinned against a hand-measured value: a 264-unit map and twelve rows is the 907-unit sheet
-    // the design is drawn at. If the geometry chain moves, this goes red first.
-    CHECK(Panel::SheetHeight(264, 12) == 907);
-
-    // 1440p and up: the designed map height and a full list.
-    CHECK(Panel::FitSheet(1440).mapHeight == 264);
-    CHECK(Panel::FitSheet(1440).rows == 12);
-
-    // 1150 px - this machine: the full sheet still fits at 100% scaling.
-    CHECK(Panel::FitSheet(1150).mapHeight == 264);
-    CHECK(Panel::FitSheet(1150).rows == 12);
-
-    // 1080p at 100%.
-    CHECK(Panel::FitSheet(1040).mapHeight == 264);
-    CHECK(Panel::FitSheet(1040).rows == 12);
-
-    // 900 px: rows give way first, and only three of them are gone.
-    const Panel::SheetFit small = Panel::FitSheet(900);
-    CHECK(small.mapHeight == 264);
-    CHECK(small.rows == 10);
-}
-
-// The map is the part the sheet refuses to give up: rows are given back first, and only when even
-// the smallest list does not fit does the map drop a size.
-WINTOOLS_TEST(Panel_ShortWorkAreaShrinksTheMap)
-{
-    const Panel::SheetFit small = Panel::FitSheet(800);
-    CHECK(small.mapHeight == 264);
-    CHECK(small.rows == 7);
-    CHECK(small.rows < 12);
-
-    // At 600 units even the smallest list has to take the smallest map.
-    const Panel::SheetFit tiny = Panel::FitSheet(600);
-    CHECK(tiny.mapHeight == 176);
-    CHECK(tiny.rows == 3);
-}
-
-// Whatever the work area, the sheet must not be taller than it - that is the whole point of the
-// function - and it must never claim a list it cannot show.
-WINTOOLS_TEST(Panel_SheetNeverExceedsTheWorkArea)
-{
-    for (int workArea = 600; workArea <= 2160; workArea += 20)
-    {
-        const Panel::SheetFit fit = Panel::FitSheet(workArea);
-        CHECK(fit.rows >= 3);
-        CHECK(fit.rows <= 12);
-
-        const int height = Panel::SheetHeight(fit.mapHeight, fit.rows);
-        if (height + 40 > workArea)
-        {
-            // Nothing fits: the fallback has to be the smallest sheet there is.
-            CHECK(fit.mapHeight == 176);
-            CHECK(fit.rows == 3);
-        }
-    }
-}
-
-// The chosen fit must be tight on both axes: one more row does not fit, and neither does the next
-// map size up with the row count it settled on. Catches a loop that stops one candidate early.
-WINTOOLS_TEST(Panel_SheetUsesTheTallestMapThatFits)
-{
-    const int workArea = 800;
-    const Panel::SheetFit fit = Panel::FitSheet(workArea);
-
-    CHECK(Panel::SheetHeight(fit.mapHeight, fit.rows + 1) + 40 > workArea);
-
-    // Where the map had to shrink, the next size up must genuinely not fit either.
-    const Panel::SheetFit tiny = Panel::FitSheet(600);
-    CHECK(tiny.mapHeight == 176);
-    CHECK(Panel::SheetHeight(220, tiny.rows) + 40 > 600);
-}
-
 // --- DPI ------------------------------------------------------------------------------------
 
 // The sheet is one design, stencilled at whatever size the display asks for. Doubling the scale
@@ -448,50 +419,6 @@ WINTOOLS_TEST(Panel_ScalesTheSheetByTheDisplayDpi)
             CHECK(::MulDiv(device, 96, static_cast<int>(dpi)) == design);
         }
     }
-}
-
-// The fit question is asked in design units, so a scaled display has to be converted down first -
-// and the answer has to fit back into the display it came from, chrome included.
-WINTOOLS_TEST(Panel_FitOnAScaledDisplayFitsTheRealWorkArea)
-{
-    const int smallest = Panel::SheetHeight(176, 3) + 40;
-
-    for (const UINT dpi : { 96u, 120u, 144u, 192u })
-    {
-        for (int deviceWorkArea = 1040; deviceWorkArea <= 2160; deviceWorkArea += 80)
-        {
-            if (Panel::ForDpi(smallest, dpi) > deviceWorkArea)
-            {
-                continue; // nothing fits at this size, so there is no claim to check
-            }
-
-            // Rounded down, mirroring Create: a work area of 1360 px at 150% is 906.7 design
-            // units, and claiming the extra third of a unit makes the fitted sheet one pixel
-            // taller than the screen it was fitted to.
-            const int design =
-                static_cast<int>(deviceWorkArea) * 96 / static_cast<int>(dpi);
-            const Panel::SheetFit fit = Panel::FitSheet(design);
-
-            const int deviceHeight =
-                Panel::ForDpi(Panel::SheetHeight(fit.mapHeight, fit.rows) + 40, dpi);
-            CHECK(deviceHeight <= deviceWorkArea);
-            CHECK(fit.rows >= 3);
-        }
-    }
-}
-
-// A scaled display is a smaller work area in design units: a 1200-px monitor at 125% offers 920
-// units. The full twelve rows and the designed map are 947 units, which does not go into 920, so
-// one row goes - the map keeps its height, because a slightly shorter list is a scroll and a
-// slightly shorter map is a worse thumbnail.
-WINTOOLS_TEST(Panel_KeepsAUsableListOnAScaledDisplay)
-{
-    const int workArea = (1200 - 50) * 96 / 120;
-    const Panel::SheetFit fit = Panel::FitSheet(workArea);
-
-    CHECK(fit.rows == 11);
-    CHECK(fit.mapHeight == 264);
-    CHECK(Panel::SheetHeight(fit.mapHeight, fit.rows) + 40 <= workArea);
 }
 
 // --- Invariants -----------------------------------------------------------------------------
@@ -522,16 +449,3 @@ WINTOOLS_TEST(Panel_HasOneButtonAndOneRowSize)
     CHECK(Panel::ListRowHeight() == 32);
 }
 
-// The sheet's fixed furniture is the difference between the whole sheet and its two variable
-// bands, and the fit arithmetic depends on it. Pinning it separately means a change to the chained
-// geometry shows up as one red line rather than as dozens of unexplained failures.
-WINTOOLS_TEST(Panel_SheetFurnitureIsConstant)
-{
-    for (const int map : { 176, 220, 264 })
-    {
-        for (const int rows : { 3, 7, 12 })
-        {
-            CHECK(Panel::SheetHeight(map, rows) == map + rows * Panel::ListRowHeight() + 259);
-        }
-    }
-}

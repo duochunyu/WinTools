@@ -135,7 +135,20 @@ Rect ClampNote(const Rect& rect, std::span<const MonitorSnapshot> monitors)
     return result;
 }
 
-Rect DefaultNoteRect(std::span<const MonitorSnapshot> monitors, int cascade)
+int MonitorAtPoint(std::span<const MonitorSnapshot> monitors, int x, int y)
+{
+    for (std::size_t index = 0; index < monitors.size(); ++index)
+    {
+        if (NoteContains(monitors[index].rect, x, y))
+        {
+            return static_cast<int>(index);
+        }
+    }
+
+    return -1;
+}
+
+Rect DefaultNoteRect(std::span<const MonitorSnapshot> monitors, int cascade, int preferredMonitor)
 {
     Rect rect{};
     rect.width = kNoteDefaultWidth;
@@ -148,17 +161,25 @@ Rect DefaultNoteRect(std::span<const MonitorSnapshot> monitors, int cascade)
 
     // The primary display is the one whose origin is (0, 0) - that is what "primary" means in
     // virtual-desktop coordinates, and it avoids a separate display-config query for it.
-    std::size_t primary = 0;
+    std::size_t chosen = 0;
     for (std::size_t index = 0; index < monitors.size(); ++index)
     {
         if (monitors[index].rect.left == 0 && monitors[index].rect.top == 0)
         {
-            primary = index;
+            chosen = index;
             break;
         }
     }
 
-    const Rect& monitor = monitors[primary].rect;
+    // A caller that knows where the user is looking wins over the primary. The range check keeps
+    // stale indices harmless: a display can disappear between capture and use.
+    if (preferredMonitor >= 0
+        && static_cast<std::size_t>(preferredMonitor) < monitors.size())
+    {
+        chosen = static_cast<std::size_t>(preferredMonitor);
+    }
+
+    const Rect& monitor = monitors[chosen].rect;
     const int step = 36 * std::max(0, cascade % 6);
 
     rect.left = monitor.left + 96 + step;

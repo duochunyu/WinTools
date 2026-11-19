@@ -68,10 +68,28 @@ public:
     /// Repaints the note on another paper. Raised through themeChanged so the index can record it.
     void SetTheme(int theme);
 
+    /// Re-reads the colours of the paper index this note already has, after the palette itself was
+    /// edited. Silently does nothing when the index is unchanged, which is why SetTheme cannot be
+    /// used for this: same index, new colour is exactly the case it short-circuits on.
+    void RepaintPaper();
+
     [[nodiscard]] bool Running() const
     {
         return m_window != nullptr;
     }
+
+    [[nodiscard]] HWND Handle() const
+    {
+        return m_window;
+    }
+
+    /// Runs one screenshot capture and puts the result in the body at the caret.
+    ///
+    /// The camera button's path, reached from the global capture hotkey: the note is not
+    /// necessarily the window with the focus when that key is pressed, so it is raised and focused
+    /// first - a picture inserted into a note the user cannot see is indistinguishable from no
+    /// picture at all, which is the bug this method exists to settle.
+    void CaptureScreenshot();
 
     /// Reads the body back from disk. Called once after Create, so the window exists without
     /// blocking on the file during creation.
@@ -83,6 +101,11 @@ public:
     /// First line or two of the body, folded to one line, for the closed-note history list.
     [[nodiscard]] std::wstring Preview() const;
 
+    /// True when the sheet carries something worth keeping: a visible character or an embedded
+    /// object (a pasted screenshot is U+FFFC and no text at all). Whitespace and empty paragraphs
+    /// are not content - a note the user opened and closed without typing is not history.
+    [[nodiscard]] bool HasContent() const;
+
     void Focus();
 
     /// Raised when the user finished dragging or resizing, so the index can be rewritten.
@@ -93,6 +116,22 @@ public:
 
     /// Raised when the user picked another paper, after the window has already been repainted.
     Callback themeChanged;
+
+    /// Raised after the delete button was confirmed, so the owner can drop the note for good -
+    /// no archive copy, no retired body. The confirmation lives in the note: the click that
+    /// answers it never reaches the owner, and the owner only ever sees a settled decision.
+    Callback deleteRequested;
+
+    /// Raised when the star toggled, after the header has been repainted.
+    Callback starChanged;
+
+    /// Sets the star without raising starChanged: the owner uses this when the note is built.
+    void SetStarred(bool starred);
+
+    [[nodiscard]] bool Starred() const
+    {
+        return m_starred;
+    }
 
 private:
     static LRESULT CALLBACK WndProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam);
@@ -115,6 +154,10 @@ private:
     void PaintIconButton(HDC dc, const RECT& box, int icon, bool active);
     void PaintColourDot(HDC dc, const RECT& box, bool active);
 
+    /// The star button: an outline while plain, a filled yellow star once starred. Kept apart from
+    /// PaintIconButton because its two states differ in fill as well as in ink.
+    void PaintStarButton(HDC dc, const RECT& box, bool active);
+
     /// Runs the action a header button stands for. Called on the release, never on the press: two
     /// of the three open a window of their own, and that window would receive the release.
     void FireButton(int button);
@@ -135,6 +178,13 @@ private:
 
     void SaveBody();
     void InsertPicture(const std::vector<std::uint8_t>& png, int width, int height);
+
+    /// Inserts the picture on the clipboard, if there is one in any format this note can read.
+    ///
+    /// Used when RichEdit's own paste came out empty-handed: it accepts the paste, finds nothing it
+    /// can use, and says nothing, which reads to the user as a broken shortcut.
+    bool PasteClipboardPicture();
+
     void TakeScreenshot();
 
     /// "Write something…" on an empty note. Drawn by the note rather than by RichEdit, which has
@@ -184,11 +234,19 @@ private:
     void RefreshStatus();
     void InvalidateHeader();
 
+    /// The line the body stops at, in client coordinates: everything below is paper the note paints
+    /// and no child window covers.
+    [[nodiscard]] int BodyBottom(int clientHeight) const;
+
+    /// Repaints that strip. Anything that can let the system draw a frame over the note - the body
+    /// taking the focus, a scroll, a frame change - has to call this, or the bottom margin keeps
+    /// whatever the system left there.
+    void InvalidateMargin();
+
     HINSTANCE m_instance{};
     HWND m_window{};
     HWND m_body{};
     HWND m_scroll{};
-    HWND m_footer{};   // paper-coloured sheet over the bottom margin
     std::wstring m_id;
     core::Rect m_rect{};
 
@@ -211,6 +269,9 @@ private:
     int m_border{ 1 };
 
     /// Button boxes, recomputed on every size change. Index into this with ButtonAt.
+    /// Physically ordered delete | dot | shot | close | star, laid out right to left.
+    RECT m_delete{};
+    RECT m_star{};
     RECT m_shot{};
     RECT m_close{};
     RECT m_dot{};
@@ -224,6 +285,10 @@ private:
     /// colour palette and the screenshot overlay are windows of their own, and one of them appeared
     /// in time to swallow the release that was meant for the note.
     int m_pressedButton{ -1 };
+
+    /// Whether the note carries the yellow star. Drawn even when the rest of the chrome is hidden:
+    /// a star the user has to hunt for is a star that stopped doing its job.
+    bool m_starred{};
 
     /// Set while the pointer is being dragged on the scrollbar: where inside the thumb it grabbed.
     int m_scrollGrab{ -1 };

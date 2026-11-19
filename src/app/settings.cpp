@@ -25,13 +25,27 @@ constexpr wchar_t kKeyLastAutoRestore[] = L"layout.lastAutoRestore=";
 constexpr wchar_t kKeyTheme[] = L"theme=";
 constexpr wchar_t kKeyActiveGroup[] = L"wallpaper.activeGroup=";
 constexpr wchar_t kKeyLanguage[] = L"language=";
+constexpr wchar_t kKeyNoteThemes[] = L"note.themes=";
 constexpr wchar_t kKeyCanvas[] = L"canvas.enabled=";
 constexpr wchar_t kKeyCanvasX[] = L"canvas.x=";
 constexpr wchar_t kKeyCanvasY[] = L"canvas.y=";
 constexpr wchar_t kKeyCanvasSize[] = L"canvas.size=";
 constexpr wchar_t kKeyCanvasSweep[] = L"canvas.sweep=";
-constexpr wchar_t kKeyHotkeyNewNote[] = L"hotkey.newNote=";
-constexpr wchar_t kKeyHotkeyCapture[] = L"hotkey.capture=";
+/// One line per shortcut. The names are spelled out rather than numbered so the file stays
+/// legible, and the first two are the names older files already carry - a binding saved by an
+/// earlier version has to keep working.
+struct HotkeyKey
+{
+    const wchar_t* name;
+    core::HotkeyAction action;
+};
+
+constexpr HotkeyKey kHotkeyKeys[] = {
+    { L"hotkey.newNote=", core::HotkeyAction::NewNote },
+    { L"hotkey.capture=", core::HotkeyAction::Capture },
+    { L"hotkey.captureLayout=", core::HotkeyAction::CaptureLayout },
+    { L"hotkey.applyLayout=", core::HotkeyAction::ApplyLayout },
+};
 
 std::wstring Trim(const std::wstring& text)
 {
@@ -180,6 +194,10 @@ Settings Settings::Load()
             {
             }
         }
+        else if (key == kKeyNoteThemes)
+        {
+            settings.noteThemes = value;
+        }
         else if (key == kKeyCanvas)
         {
             settings.canvasEnabled = ToBool(value);
@@ -218,22 +236,23 @@ Settings Settings::Load()
         {
             settings.canvasSweep = ToBool(value);
         }
-        else if (key == kKeyHotkeyNewNote)
+        else
         {
-            // An absent or unparsable value keeps the default, so settings written before
-            // shortcuts existed do not silently lose both bindings on upgrade.
-            const core::Hotkey parsed = core::ParseHotkey(value);
-            if (parsed.Bound() || value == L"0,0")
+            // An absent or unparsable value keeps the default, so settings written before a
+            // shortcut existed do not silently lose the bindings they do have on upgrade.
+            for (const HotkeyKey& entry : kHotkeyKeys)
             {
-                settings.hotkeys.At(core::HotkeyAction::NewNote) = parsed;
-            }
-        }
-        else if (key == kKeyHotkeyCapture)
-        {
-            const core::Hotkey parsed = core::ParseHotkey(value);
-            if (parsed.Bound() || value == L"0,0")
-            {
-                settings.hotkeys.At(core::HotkeyAction::Capture) = parsed;
+                if (key != entry.name)
+                {
+                    continue;
+                }
+
+                const core::Hotkey parsed = core::ParseHotkey(value);
+                if (parsed.Bound() || value == L"0,0")
+                {
+                    settings.hotkeys.At(entry.action) = parsed;
+                }
+                break;
             }
         }
     }
@@ -274,15 +293,16 @@ bool Settings::Save() const
     text += std::format(L"{}{}\n", kKeyTheme, theme);
     text += std::format(L"{}{}\n", kKeyActiveGroup, activeGroup);
     text += std::format(L"{}{}\n", kKeyLanguage, language);
+    text += std::format(L"{}{}\n", kKeyNoteThemes, noteThemes);
     text += std::format(L"{}{}\n", kKeyCanvas, canvasEnabled ? 1 : 0);
     text += std::format(L"{}{}\n", kKeyCanvasX, canvas.x);
     text += std::format(L"{}{}\n", kKeyCanvasY, canvas.y);
     text += std::format(L"{}{}\n", kKeyCanvasSize, canvas.size);
     text += std::format(L"{}{}\n", kKeyCanvasSweep, canvasSweep ? 1 : 0);
-    text += std::format(L"{}{}\n", kKeyHotkeyNewNote,
-        core::FormatHotkey(hotkeys.At(core::HotkeyAction::NewNote)));
-    text += std::format(L"{}{}\n", kKeyHotkeyCapture,
-        core::FormatHotkey(hotkeys.At(core::HotkeyAction::Capture)));
+    for (const HotkeyKey& entry : kHotkeyKeys)
+    {
+        text += std::format(L"{}{}\n", entry.name, core::FormatHotkey(hotkeys.At(entry.action)));
+    }
 
     std::ofstream out(file, std::ios::binary | std::ios::trunc);
     if (!out)

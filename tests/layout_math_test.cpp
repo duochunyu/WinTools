@@ -1,5 +1,6 @@
 #include "test_framework.h"
 
+#include <cmath>
 #include <limits>
 #include <vector>
 
@@ -338,6 +339,193 @@ WINTOOLS_TEST(LayoutMath_SlackIsZeroOnTheCoveredAxis)
     const ViewSlack zoomed = ComputeSlack(canvas, 4000, 1080, twice);
     CHECK(zoomed.x > wide.x);
     CHECK(zoomed.y > 0);
+}
+
+// A turned picture is a diamond inside its bounding box, so covering the box would fill every
+// display's corners with the matte behind the turn. The cover has to be computed against the
+// picture itself: a square box needs exactly sqrt(2) before a 45-degree turn reaches its corners.
+WINTOOLS_TEST(LayoutMath_CoversWithTheTurnedPictureNotItsBox)
+{
+    const std::vector<Monitor> monitors{ MakeMonitor(0, 0, 1600, 1600) };
+    const Rect canvas = GetCanvas(monitors);
+
+    WallpaperView turned;
+    turned.rotation = 45.0;
+
+    const ViewSlack flat = ComputeSlack(canvas, 1600, 1600, WallpaperView{});
+    CHECK_EQ(flat.scale, 1.0);
+    CHECK_EQ(flat.x, 0);
+
+    const ViewSlack fit = ComputeSlack(canvas, 1600, 1600, turned);
+    CHECK(std::abs(fit.scale - std::sqrt(2.0)) < 0.01);
+
+    // The box grew to 2263 square and was then scaled: 2263 * sqrt(2) is the whole surface the
+    // renderer needs, and the canvas finds picture at every one of its corners.
+    CHECK(fit.scaledWidth >= 3200);
+    CHECK(fit.scaledHeight >= 3200);
+
+    // Nothing is left to pan: at this scale the picture touches all four corners of the canvas.
+    CHECK_EQ(fit.halfX, 0.0);
+    CHECK_EQ(fit.halfY, 0.0);
+}
+
+// A quarter turn leaves no empty corner at all, so the framing must match what the same picture
+// would do unturned-and-swapped - and every pixel of the bounding box stays pannable.
+WINTOOLS_TEST(LayoutMath_AQuarterTurnHasNoEmptyCorners)
+{
+    const std::vector<Monitor> monitors{ MakeMonitor(0, 0, 1920, 1080) };
+    const Rect canvas = GetCanvas(monitors);
+
+    WallpaperView quarter;
+    quarter.rotation = 90.0;
+
+    const ViewSlack turned = ComputeSlack(canvas, 4000, 3000, quarter);
+    const ViewSlack swapped = ComputeSlack(canvas, 3000, 4000, WallpaperView{});
+    CHECK(std::abs(turned.scale - swapped.scale) < 1e-12);
+
+    // Nothing is masked by the turn, so the whole slack is usable and the framing stays on the
+    // axis-aligned path.
+    CHECK(!turned.turned);
+    CHECK(std::abs(turned.halfX - turned.x / 2.0) < 1e-9);
+    CHECK(std::abs(turned.halfY - turned.y / 2.0) < 1e-9);
+}
+
+// An oblique turn does spend pan room on the corners. The pane has to shrink with it, or a drag
+// would slide a display off the picture and show the matte the cover was computed to avoid.
+WINTOOLS_TEST(LayoutMath_AnObliqueTurnCostsPanRoom)
+{
+    const std::vector<Monitor> monitors{ MakeMonitor(0, 0, 1920, 1080) };
+    const Rect canvas = GetCanvas(monitors);
+
+    WallpaperView view;
+    view.rotation = 20.0;
+    view.zoom = 2.0;
+
+    const ViewSlack fit = ComputeSlack(canvas, 3840, 2160, view);
+    CHECK(fit.x > 0);
+    CHECK(fit.turned);
+
+    // Travel is measured along the picture's axes, and the canvas asks for more picture on the
+    // diagonal than it does square-on - so there is still room, but less than the box suggests.
+    CHECK(fit.halfX > 0.0);
+    CHECK(fit.halfY > 0.0);
+    CHECK(2.0 * fit.halfX < fit.x);
+    CHECK(2.0 * fit.halfY < fit.y);
+}
+
+// A turned picture has to be able to travel in any direction. Clamping the two canvas axes to the
+// box around the diamond stopped a diagonal drag long before the picture ran out; the travel box
+// is the picture's own, so pushing along one of its axes moves the offset on both canvas axes -
+// and by exactly the distance that axis had left.
+WINTOOLS_TEST(LayoutMath_ATurnedPictureTravelsOnItsOwnAxes)
+{
+    const std::vector<Monitor> monitors{ MakeMonitor(0, 0, 1920, 1080) };
+    const Rect canvas = GetCanvas(monitors);
+
+    WallpaperView centre;
+    centre.rotation = 30.0;
+    centre.zoom = 2.0;
+
+    const ViewSlack fit = ComputeSlack(canvas, 3840, 2160, centre);
+    CHECK(fit.turned);
+    CHECK(fit.halfX > 20.0);
+
+    WallpaperView edge = centre;
+    edge.focusX = 0.0;
+
+    const FrameOffset middle = FrameOffsetFor(fit, centre);
+    const FrameOffset pushed = FrameOffsetFor(fit, edge);
+
+    // Both axes move, and the distance is the half-extent the picture had along that axis.
+    CHECK(std::abs(pushed.x - middle.x) > 10);
+    CHECK(std::abs(pushed.y - middle.y) > 10);
+    const double travelled = std::hypot(
+        static_cast<double>(pushed.x - middle.x), static_cast<double>(pushed.y - middle.y));
+    CHECK(std::abs(travelled - fit.halfX) < 2.0);
+
+    // The inverse has to land back on the focus that produced the offset.
+    const WallpaperView back = FocusForOffset(fit, centre, pushed.x, pushed.y);
+    CHECK(std::abs(back.focusX) < 0.01);
+    CHECK(std::abs(back.focusY - 0.5) < 0.01);
+
+    // A quarter turn is still one axis at a time - nothing about the straight case changed.
+    WallpaperView quarter;
+    quarter.rotation = 90.0;
+    quarter.zoom = 2.0;
+    WallpaperView quarterEdge = quarter;
+    quarterEdge.focusX = 0.0;
+
+    const ViewSlack flat = ComputeSlack(canvas, 3840, 2160, quarter);
+    const FrameOffset flatMiddle = FrameOffsetFor(flat, quarter);
+    const FrameOffset flatPushed = FrameOffsetFor(flat, quarterEdge);
+    CHECK(std::abs(flatPushed.x - flatMiddle.x) > 10);
+    CHECK_EQ(flatPushed.y, flatMiddle.y);
+}
+
+// The end that matters: no corner of a monitor may look at a pixel the turn left empty. Every
+// corner of the slice is mapped back through the turn and has to land inside the picture - the
+// matte behind the turn is exactly what a sample outside that rectangle would show.
+WINTOOLS_TEST(LayoutMath_NoMonitorCornerLandsOnTheMatte)
+{
+    const std::vector<Monitor> monitors{ MakeMonitor(0, 0, 1920, 1080) };
+    const Rect canvas = GetCanvas(monitors);
+
+    constexpr int sourceWidth = 4000;
+    constexpr int sourceHeight = 2250;
+
+    // Four angles, because the travel box is the picture's own and the corners land in a different
+    // quadrant each time: 30 and 45 put the diagonal in the way, 100 is past a right angle (where
+    // the cosine is negative and a sign slip would show), and 137 is close to the worst case.
+    for (const double degrees : { 30.0, 45.0, 100.0, 137.0 })
+    {
+        const double radians = degrees * 3.14159265358979323846 / 180.0;
+        const double cosine = std::cos(radians);
+        const double sine = std::sin(radians);
+        const RotatedBox turned = RotatedBounds(sourceWidth, sourceHeight, degrees);
+
+        for (const double zoom : { 1.0, 1.7, 3.0 })
+        {
+            // The two focus values are the picture's own axes, so 0/1 pairs are the ends of its
+            // diagonal - the corners of the travel box, where there is the least picture to spare.
+            for (const auto& [focusX, focusY] :
+                { std::pair{ 0.0, 0.0 }, std::pair{ 0.0, 1.0 }, std::pair{ 0.5, 0.5 },
+                    std::pair{ 1.0, 0.0 }, std::pair{ 1.0, 1.0 } })
+            {
+                WallpaperView view;
+                view.rotation = degrees;
+                view.zoom = zoom;
+                view.focusX = focusX;
+                view.focusY = focusY;
+
+                const auto slice = ComputeSlice(canvas, sourceWidth, sourceHeight, monitors[0], view);
+                CHECK(slice.has_value());
+                if (!slice.has_value())
+                {
+                    continue;
+                }
+
+                const ViewSlack fit = ComputeSlack(canvas, sourceWidth, sourceHeight, view);
+
+                for (const int cx : { 0, monitors[0].width })
+                {
+                    for (const int cy : { 0, monitors[0].height })
+                    {
+                        // The corner in the turned bitmap, then back through the turn into the
+                        // picture itself.
+                        const double bx = (slice->canvasX + cx) / fit.scale;
+                        const double by = (slice->canvasY + cy) / fit.scale;
+                        const double u = bx - turned.width / 2.0;
+                        const double v = by - turned.height / 2.0;
+                        const double px = u * cosine + v * sine + sourceWidth / 2.0;
+                        const double py = -u * sine + v * cosine + sourceHeight / 2.0;
+
+                        CHECK(px >= -1.5 && px <= sourceWidth + 1.5);
+                        CHECK(py >= -1.5 && py <= sourceHeight + 1.5);
+                    }
+                }
+            }
+        }
+    }
 }
 
 // Values from a settings file are user-editable text, and a NaN or a zero would otherwise reach

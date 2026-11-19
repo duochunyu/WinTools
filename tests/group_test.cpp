@@ -1,11 +1,14 @@
 #include "test_framework.h"
 
+#include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <vector>
 
 #include "core/group.h"
+#include "core/layout_math.h"
 
 using namespace wintools::core;
 
@@ -280,6 +283,92 @@ WINTOOLS_TEST(Group_SaveLoadRoundTrip)
     CHECK_EQ((*read)[0].members[1], std::wstring{ L"\\\\?\\DISPLAY#B" });
     CHECK_EQ((*read)[1].image, std::wstring{});
     CHECK(!(*read)[1].dirty);
+}
+
+WINTOOLS_TEST(Group_RoundTripsAnArbitraryTurn)
+{
+    const TempFile file(L"wintools_groups_rotation.tsv");
+
+    Group group;
+    group.image = L"D:\\pics\\tall.png";
+    group.view.rotation = 37.5;
+    group.members = { L"\\\\?\\DISPLAY#A" };
+
+    std::vector<Group> written{ group };
+    CHECK(SaveGroups(written, file.Path()));
+
+    const auto read = LoadGroups(file.Path());
+    CHECK(read.has_value());
+    if (!read.has_value())
+    {
+        return;
+    }
+
+    CHECK_EQ(read->size(), size_t{ 1 });
+    CHECK(std::abs((*read)[0].view.rotation - 37.5) < 0.0001);
+}
+
+WINTOOLS_TEST(Group_ReadsAFileWrittenBeforeTheTurn)
+{
+    const TempFile file(L"wintools_groups_no_rotation.tsv");
+
+    {
+        // Seven fields, no rotation: every groups.tsv the user already has looks like this.
+        std::ofstream out(file.Path(), std::ios::binary | std::ios::trunc);
+        out << "# WinTools groups v1\n"
+               "group\t1.0000\t0.5000\t0.5000\t0\tD:\\pics\\wide.png\t\\\\\\?\\DISPLAY#A\n";
+    }
+
+    const auto read = LoadGroups(file.Path());
+    CHECK(read.has_value());
+    if (!read.has_value())
+    {
+        return;
+    }
+
+    CHECK_EQ(read->size(), size_t{ 1 });
+    CHECK_EQ((*read)[0].view.rotation, 0.0);
+}
+
+WINTOOLS_TEST(Group_ClampViewWrapsAnyAngle)
+{
+    WallpaperView view;
+    view.rotation = 450;
+    CHECK_EQ(ClampView(view).rotation, 90);
+
+    view.rotation = -90;
+    CHECK_EQ(ClampView(view).rotation, 270);
+
+    view.rotation = 720;
+    CHECK_EQ(ClampView(view).rotation, 0);
+
+    view.rotation = 45.5;
+    CHECK(std::abs(ClampView(view).rotation - 45.5) < 0.0001);
+
+    view.rotation = -12.25;
+    CHECK(std::abs(ClampView(view).rotation - 347.75) < 0.0001);
+
+    view.rotation = std::numeric_limits<double>::quiet_NaN();
+    CHECK_EQ(ClampView(view).rotation, 0);
+}
+
+WINTOOLS_TEST(Layout_RotatedBoundsGrowsObliqueTurns)
+{
+    const RotatedBox level = RotatedBounds(800, 600, 0);
+    CHECK_EQ(level.width, 800);
+    CHECK_EQ(level.height, 600);
+
+    const RotatedBox quarter = RotatedBounds(800, 600, 90);
+    CHECK_EQ(quarter.width, 600);
+    CHECK_EQ(quarter.height, 800);
+
+    // A 45-degree turn has to grow both axes: four corners stick out past the original box.
+    const RotatedBox oblique = RotatedBounds(800, 600, 45);
+    CHECK(oblique.width > 800);
+    CHECK(oblique.height > 600);
+    CHECK_EQ(oblique.width, oblique.height);
+
+    CHECK_EQ(RotatedBounds(800, 600, 360).width, 800);
 }
 
 WINTOOLS_TEST(Group_LoadRejectsAFileWithNoGroups)

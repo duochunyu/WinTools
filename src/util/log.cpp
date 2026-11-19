@@ -93,8 +93,12 @@ void AppendToFile(const std::wstring& line)
         }
     }
 
-    const HANDLE handle = ::CreateFileW(file.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr,
-        OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    // Viewers must be able to open the log while it is being written: most editors request
+    // read+write access, and denying WRITE here makes "open the log" fail with a sharing violation
+    // that reads to the user like a missing file. DELETE is shared for the rotation below.
+    const HANDLE handle = ::CreateFileW(file.c_str(), FILE_APPEND_DATA,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
 
     if (handle == INVALID_HANDLE_VALUE)
     {

@@ -113,8 +113,8 @@ NoteArchive ParseNoteArchive(std::wstring_view text)
             continue;
         }
 
-        // closed<TAB>id<TAB>x<TAB>y<TAB>w<TAB>h<TAB>theme<TAB>preview<TAB>closedAt
-        // The last two fields are free text and may be empty; everything before them is geometry.
+        // closed<TAB>id<TAB>x<TAB>y<TAB>w<TAB>h<TAB>theme<TAB>preview<TAB>closedAt<TAB>starred
+        // The last three fields are free text or optional and may be absent in older files.
         std::wistringstream fields(line);
         std::wstring kind;
         std::wstring id;
@@ -150,6 +150,14 @@ NoteArchive ParseNoteArchive(std::wstring_view text)
 
         std::getline(fields, record.preview, L'\t');
         std::getline(fields, record.closedAt, L'\t');
+
+        // Optional trailing field; an archive written before the star existed simply stops here.
+        std::wstring starred;
+        if (std::getline(fields, starred, L'\t'))
+        {
+            record.starred = starred == L"1";
+        }
+
         archive.records.push_back(std::move(record));
     }
 
@@ -173,9 +181,10 @@ std::wstring FormatNoteArchive(const NoteArchive& archive)
     std::wstring text = kHeader;
     for (const ArchiveRecord& record : archive.records)
     {
-        text += std::format(L"{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", kKey, record.id,
+        text += std::format(L"{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", kKey, record.id,
             record.rect.left, record.rect.top, record.rect.width, record.rect.height,
-            ClampNoteTheme(record.theme), flatten(record.preview), flatten(record.closedAt));
+            ClampNoteTheme(record.theme), flatten(record.preview), flatten(record.closedAt),
+            record.starred ? 1 : 0);
     }
 
     return text;

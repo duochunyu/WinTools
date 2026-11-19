@@ -19,6 +19,10 @@ struct NoteRecord
     /// Which paper the note is written on. An index written before the palette existed has no such
     /// field at all, so this defaults to the yellow every note used to be.
     int theme{ 0 };
+
+    /// Whether the note carries the yellow star. Same tolerance as the theme: an older index has
+    /// no such field, and an unstarred note is the default.
+    bool starred{ false };
 };
 
 /// The notes on disk: a small index plus one RTF file per note.

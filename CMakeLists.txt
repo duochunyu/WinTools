@@ -109,6 +109,7 @@ target_include_directories(WinTools PRIVATE assets)
 target_link_libraries(WinTools PRIVATE
     wintools_core
     advapi32    # RegOpenKeyEx / RegSetValueEx for the autostart entry
+    comdlg32    # ChooseColorW, the system picker behind the note palette's rows
     dwmapi      # rounded window corners on Windows 11
     gdiplus     # anti-aliased sticky-note chrome (icons, page-edge rule, save time)
 )
@@ -144,7 +145,7 @@ add_executable(wintools_tests
     # therefore linkable without ever creating a window.
     src/app/panel.cpp
 )
-target_link_libraries(wintools_tests PRIVATE wintools_core dwmapi)
+target_link_libraries(wintools_tests PRIVATE wintools_core comdlg32 dwmapi gdiplus)
 add_test(NAME unit COMMAND wintools_tests)
 
 # Put every binary in one place so scripts and packaging do not have to guess.

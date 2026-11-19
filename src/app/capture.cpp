@@ -188,7 +188,7 @@ HBITMAP ScaleDown(HDC screen, HBITMAP source, void* sourceBits, int width, int h
     return scaled;
 }
 
-bool EncodePng(void* bits, int width, int height, std::vector<std::uint8_t>& out)
+bool EncodePngBits(void* bits, int width, int height, std::vector<std::uint8_t>& out)
 {
     IWICImagingFactory* const factory = platform::GetWicFactory();
     if (factory == nullptr)
@@ -426,11 +426,18 @@ bool CropToPng(const Backdrop& backdrop, const RECT& region, CapturedImage& imag
     crop = ScaleDown(
         backdrop.brightDc, crop, bits, width, height, &finalBits, finalWidth, finalHeight);
 
-    const bool ok = EncodePng(finalBits, finalWidth, finalHeight, image.png);
+    const bool ok = EncodePngBits(finalBits, finalWidth, finalHeight, image.png);
     if (ok)
     {
         image.width = finalWidth;
         image.height = finalHeight;
+
+        // Kept alongside the PNG so the clipboard does not have to decode what this line just
+        // encoded. The pixels belong to the bitmap above and die with it, hence the copy.
+        const std::size_t stride = static_cast<std::size_t>(finalWidth) * 4;
+        const std::size_t bytes = stride * static_cast<std::size_t>(finalHeight);
+        const auto* pixels = static_cast<const std::uint8_t*>(finalBits);
+        image.bgra.assign(pixels, pixels + bytes);
     }
 
     ::DeleteObject(crop);
@@ -677,6 +684,13 @@ LRESULT CALLBACK OverlayProc(HWND window, UINT message, WPARAM wparam, LPARAM lp
 
 } // namespace
 
+bool EncodePng(const void* bits, int width, int height, std::vector<std::uint8_t>& out)
+{
+    // const_cast, not a copy: WIC reads the buffer and promises not to write to it, but its API
+    // predates const and still asks for a non-const pointer.
+    return EncodePngBits(const_cast<void*>(bits), width, height, out);
+}
+
 bool PickRegion(HINSTANCE instance, CapturedImage& image)
 {
     const int originX = ::GetSystemMetrics(SM_XVIRTUALSCREEN);
@@ -766,50 +780,130 @@ bool PickRegion(HINSTANCE instance, CapturedImage& image)
     return ok;
 }
 
-std::wstring SaveRegionToPictures(HINSTANCE instance)
+UINT PngClipboardFormat()
+{
+    static const UINT id = ::RegisterClipboardFormatW(L"PNG");
+    return id;
+}
+
+/// Puts a capture on the clipboard as a picture.
+///
+/// Two formats, because the receiving program chooses: CF_DIB for everything that pastes pixels -
+/// Word, Paint, most chat clients - and the registered "PNG" format for the ones that would rather
+/// have a real image. Both are built from the same pixels here instead of from `image.png`, because
+/// a screenshot is opaque and the alpha byte has to say so: an image that claims to be transparent
+/// pastes as nothing at all in the programs that honour it.
+bool CopyPictureToClipboard(const CapturedImage& image)
+{
+    if (image.bgra.empty() || image.width <= 0 || image.height <= 0)
+    {
+        return false;
+    }
+
+    std::vector<std::uint8_t> pixels = image.bgra;
+    for (std::size_t index = 3; index < pixels.size(); index += 4)
+    {
+        pixels[index] = 0xFF;
+    }
+
+    const std::size_t bytes = static_cast<std::size_t>(image.width) * 4
+        * static_cast<std::size_t>(image.height);
+    const std::size_t dibSize = sizeof(BITMAPINFOHEADER) + bytes;
+
+    HGLOBAL dib = ::GlobalAlloc(GMEM_MOVEABLE, dibSize);
+    if (dib == nullptr)
+    {
+        util::LogError(L"screen capture: cannot allocate the clipboard bitmap");
+        return false;
+    }
+
+    auto* memory = static_cast<std::uint8_t*>(::GlobalLock(dib));
+    if (memory == nullptr)
+    {
+        ::GlobalFree(dib);
+        return false;
+    }
+
+    BITMAPINFOHEADER header{};
+    header.biSize = sizeof(BITMAPINFOHEADER);
+    header.biWidth = image.width;
+    header.biHeight = -image.height;   // top-down, which is the order the pixels are already in
+    header.biPlanes = 1;
+    header.biBitCount = 32;
+    header.biCompression = BI_RGB;
+    header.biSizeImage = static_cast<DWORD>(bytes);
+    std::memcpy(memory, &header, sizeof(header));
+    std::memcpy(memory + sizeof(header), pixels.data(), bytes);
+    ::GlobalUnlock(dib);
+
+    std::vector<std::uint8_t> png;
+    HGLOBAL picture = nullptr;
+    if (EncodePngBits(pixels.data(), image.width, image.height, png) && !png.empty())
+    {
+        picture = ::GlobalAlloc(GMEM_MOVEABLE, png.size());
+        if (picture != nullptr)
+        {
+            if (void* target = ::GlobalLock(picture))
+            {
+                std::memcpy(target, png.data(), png.size());
+                ::GlobalUnlock(picture);
+            }
+        }
+    }
+
+    bool ok = false;
+    if (::OpenClipboard(nullptr) == FALSE)
+    {
+        util::LogError(L"screen capture: the clipboard is locked by another program");
+    }
+    else
+    {
+        ::EmptyClipboard();
+
+        // SetClipboardData takes ownership on success only, which is why the handles are dropped
+        // as soon as each call reports one - freeing them afterwards would free the clipboard's
+        // own memory.
+        if (::SetClipboardData(CF_DIB, dib) != nullptr)
+        {
+            dib = nullptr;
+            ok = true;
+        }
+
+        if (picture != nullptr && ::SetClipboardData(PngClipboardFormat(), picture) != nullptr)
+        {
+            picture = nullptr;
+        }
+
+        ::CloseClipboard();
+    }
+
+    if (dib != nullptr)
+    {
+        ::GlobalFree(dib);
+    }
+
+    if (picture != nullptr)
+    {
+        ::GlobalFree(picture);
+    }
+
+    if (ok)
+    {
+        util::LogInfo(L"capture copied to the clipboard, {}x{}", image.width, image.height);
+    }
+
+    return ok;
+}
+
+CaptureResult CopyRegionToClipboard(HINSTANCE instance)
 {
     CapturedImage image;
     if (!PickRegion(instance, image))
     {
-        return {};
+        return CaptureResult::Cancelled;
     }
 
-    const std::filesystem::path folder = util::PicturesFolder() / L"WinTools";
-    std::error_code ec;
-    std::filesystem::create_directories(folder, ec);
-    if (ec)
-    {
-        util::LogError(L"cannot create '{}': {}", folder.wstring(), util::FromUtf8(ec.message()));
-        return {};
-    }
-
-    // Seconds in the name are enough: two captures in the same second would need an ordinal, and
-    // a collision silently overwriting a screenshot is worse than the rare extra digit.
-    const std::time_t now = std::time(nullptr);
-    std::tm local{};
-    ::localtime_s(&local, &now);
-    const std::wstring name = std::format(L"截图 {:04}{:02}{:02}-{:02}{:02}{:02}.png",
-        local.tm_year + 1900, local.tm_mon + 1, local.tm_mday, local.tm_hour, local.tm_min,
-        local.tm_sec);
-
-    const std::filesystem::path file = folder / name;
-    std::ofstream out(file, std::ios::binary | std::ios::trunc);
-    if (!out)
-    {
-        util::LogError(L"cannot write '{}'", file.wstring());
-        return {};
-    }
-
-    out.write(reinterpret_cast<const char*>(image.png.data()),
-        static_cast<std::streamsize>(image.png.size()));
-    if (!out)
-    {
-        util::LogError(L"cannot write '{}'", file.wstring());
-        return {};
-    }
-
-    util::LogInfo(L"saved hotkey screenshot to {}", file.wstring());
-    return file.wstring();
+    return CopyPictureToClipboard(image) ? CaptureResult::Copied : CaptureResult::Failed;
 }
 
 } // namespace wintools::app

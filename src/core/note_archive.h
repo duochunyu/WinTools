@@ -19,6 +19,9 @@ struct ArchiveRecord
     Rect rect{};
     int theme{ 0 };
 
+    /// Whether the star came with the note into the archive, so reopening it does not lose it.
+    bool starred{ false };
+
     /// First line or two of the body, with tabs and newlines folded to spaces.
     std::wstring preview;
 

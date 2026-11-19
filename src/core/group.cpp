@@ -454,10 +454,13 @@ bool SaveGroups(const std::vector<Group>& groups, const std::filesystem::path& f
 
         // One line per group, fixed column order. The framing is written with four decimals for
         // the same reason settings.txt does: a float that round-trips through a text file should
-        // come back the same number, and a crop the user spent time on should not drift.
-        text += std::format(L"group\t{:.4f}\t{:.4f}\t{:.4f}\t{}\t{}\t{}\n", group.view.zoom,
+        // come back the same number, and a crop the user spent time on should not drift. The
+        // rotation rides at the end as an optional trailing field - members is sanitised text
+        // that may never hold a tab, so appending after it cannot break older files. Any angle is
+        // legal now, not just quarter turns, so it is written as a decimal like the other framings.
+        text += std::format(L"group\t{:.4f}\t{:.4f}\t{:.4f}\t{}\t{}\t{}\t{:.4f}\n", group.view.zoom,
             group.view.focusX, group.view.focusY, group.dirty ? 1 : 0, Sanitize(group.image),
-            members);
+            members, group.view.rotation);
     }
 
     std::ofstream out(file, std::ios::binary | std::ios::trunc);
@@ -523,7 +526,7 @@ std::optional<std::vector<Group>> LoadGroups(const std::filesystem::path& file)
             continue;
         }
 
-        // tag, zoom, focusX, focusY, dirty, image, members
+        // tag, zoom, focusX, focusY, dirty, image, members[, rotation]
         std::vector<std::wstring> fields;
         size_t start = 0;
         while (true)
@@ -547,10 +550,19 @@ std::optional<std::vector<Group>> LoadGroups(const std::filesystem::path& file)
         group.view.zoom = number(fields[1], 1.0);
         group.view.focusX = number(fields[2], 0.5);
         group.view.focusY = number(fields[3], 0.5);
-        group.view = ClampView(group.view);
         group.dirty = fields[4] == L"1" || fields[4] == L"true";
         group.image = fields[5];
         group.members = SplitMembers(fields[6]);
+
+        // Optional trailing field, and silently so: every file written before the turn existed
+        // stops after members. ClampView normalises whatever lands here (or the default 0 when the
+        // field is absent); a garbage number already falls back to 0 via `number`. Fractional
+        // angles are legal - the drag handle writes them - and old integral ones read unchanged.
+        if (fields.size() >= 8)
+        {
+            group.view.rotation = number(fields[7], 0.0);
+        }
+        group.view = ClampView(group.view);
 
         if (group.members.empty())
         {

@@ -55,6 +55,11 @@ struct Settings
     /// util::i18n::Language and is applied once at startup, before the first log line.
     int language{ 0 };
 
+    /// The sticky-note papers, as "RRGGBB,RRGGBB,..." for 2-5 colours. Empty keeps the built-in
+    /// six. Stored raw rather than parsed: the palette is applied once at startup, and a
+    /// hand-edited value that parses to nothing simply falls back to the default.
+    std::wstring noteThemes;
+
     /// The desktop calendar: whether it is up, and where its square sits in virtual-desktop
     /// pixels. Stored here rather than in a file of its own because it is one widget, and a
     /// second file for three numbers would be a second thing to keep in sync.

@@ -4,7 +4,9 @@
 #include <shellapi.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <format>
+#include <system_error>
 #include <utility>
 
 #include "app/actions.h"
@@ -12,6 +14,7 @@
 #include "app/startup.h"
 #include "core/desktop_wallpaper.h"
 #include "core/layout_math.h"
+#include "core/note_theme.h"
 #include "core/wallpaper_store.h"
 #include "util/i18n.h"
 #include "util/log.h"
@@ -240,6 +243,10 @@ bool Service::Start(bool showPanel)
     m_settings = Settings::Load();
     m_status.clear();
 
+    // Custom note papers, applied once before any note window or panel exists. An unparsable or
+    // out-of-range value keeps the built-in six; see core::SetNotePalette.
+    core::SetNotePalette(core::ParseNotePalette(m_settings.noteThemes));
+
     if (!CreateHostWindow())
     {
         return false;
@@ -364,9 +371,49 @@ LRESULT Service::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam)
             }
             else if (id == static_cast<int>(core::HotkeyAction::Capture))
             {
-                const std::wstring saved = SaveRegionToPictures(m_instance);
-                SetStatus(saved.empty() ? util::i18n::Cstr(L"截图已取消") : saved,
-                    false);
+                // Into the note the user is in, when there is one. The hotkey exists so that a
+                // screenshot can be pasted where the thought is; sending it to a folder and
+                // changing nothing on screen reads as "the hotkey did nothing", which is what was
+                // reported after a day of screenshots quietly landing in Pictures.
+                if (Note* note = m_notes.NoteInForeground(); note != nullptr)
+                {
+                    util::LogInfo(L"hotkey capture goes into note {}", note->Id());
+                    note->CaptureScreenshot();
+                    return 0;
+                }
+
+                // Nothing to insert into, so the picture goes to the clipboard instead of a file:
+                // the user asked for a screenshot they can paste wherever they are, and a file in
+                // Pictures was both invisible and an unnecessary copy of something that is about to
+                // be pasted anyway. The balloon is the only feedback this path has - the panel's
+                // status line is not on screen when the panel is closed.
+                switch (CopyRegionToClipboard(m_instance))
+                {
+                    case CaptureResult::Cancelled:
+                        SetStatus(util::i18n::Cstr(L"截图已取消"), false);
+                        break;
+
+                    case CaptureResult::Copied:
+                        SetStatus(util::i18n::Cstr(L"截图完成，可粘贴"), false);
+                        m_tray.ShowInfo(util::i18n::Cstr(L"截图完成，可粘贴"),
+                            util::i18n::Cstr(L"按 Ctrl+V 粘贴到任意位置"));
+                        break;
+
+                    case CaptureResult::Failed:
+                        SetStatus(util::i18n::Cstr(L"截图失败，详见日志"), true);
+                        break;
+                }
+            }
+            else if (id == static_cast<int>(core::HotkeyAction::CaptureLayout)
+                || id == static_cast<int>(core::HotkeyAction::ApplyLayout))
+            {
+                // Routed through the same request the layout page's buttons send, so the shortcut and
+                // the click can never drift apart. The tray tooltip carries the result, exactly as it
+                // does when the same action is picked from the tray menu.
+                const PanelAction action = id == static_cast<int>(core::HotkeyAction::CaptureLayout)
+                    ? PanelAction::RefreshLayout
+                    : PanelAction::ApplyLayout;
+                HandleAction(PanelRequest{ action });
             }
             return 0;
         }
@@ -706,6 +753,63 @@ void Service::HandleAction(const PanelRequest& request)
             return;
         }
 
+        case PanelAction::RotateWallpaper:
+        {
+            if (m_groups.empty())
+            {
+                SetStatus(L"还没有组合，先接一台显示器", true);
+                return;
+            }
+
+            const int slot = ClampActiveSlot(m_activeSlot);
+            core::Group& group = m_groups[static_cast<size_t>(slot)];
+            if (group.image.empty())
+            {
+                SetStatus(L"这个组合还没选图片", true);
+                return;
+            }
+
+            // A quarter-turn clockwise on the picture itself, not a change of picture: a short
+            // click on the arc handle steps 90 degrees, while a drag uses CommitWallpaperRotation
+            // to set an arbitrary angle. The turn is part of the view, so it persists with the
+            // group, feeds the map preview, and re-renders the slices through ApplyAllGroups.
+            group.view.rotation = core::ClampView(
+                core::WallpaperView{ group.view.zoom, group.view.focusX, group.view.focusY,
+                    group.view.rotation + 90.0 }).rotation;
+            group.dirty = false;
+            SaveGroupsNow();
+            util::LogInfo(L"组合 {}: 壁纸旋转到 {:.1f} 度", core::GroupLabel(group, core::CaptureMonitors()),
+                group.view.rotation);
+
+            BeginWork(L"生成中…", [this] { return ApplyAllGroups(); }, true);
+            return;
+        }
+
+        case PanelAction::CommitWallpaperRotation:
+        {
+            if (m_groups.empty() || request.index < 0
+                || request.index >= static_cast<int>(m_groups.size()))
+            {
+                return;
+            }
+
+            core::Group& group = m_groups[static_cast<size_t>(request.index)];
+            if (group.image.empty())
+            {
+                return;
+            }
+
+            // One write and one re-render for the whole gesture, not one per mouse move.
+            group.view = core::ClampView(request.view);
+            group.dirty = false;
+            SaveGroupsNow();
+            util::LogInfo(L"组合 {}: 壁纸旋转到 {:.1f} 度", core::GroupLabel(group, core::CaptureMonitors()),
+                group.view.rotation);
+
+            BeginWork(L"生成中…", [this] { return ApplyAllGroups(); }, true);
+            return;
+        }
+
         case PanelAction::RestoreWallpaper:
         {
             const WaitCursor busy;
@@ -848,9 +952,11 @@ void Service::HandleAction(const PanelRequest& request)
             return;
         }
 
-        case PanelAction::CycleTheme:
+        case PanelAction::SetTheme:
         {
-            m_settings.theme = (std::clamp(m_settings.theme, 0, 2) + 1) % 3;
+            // Picked, not cycled: the config page shows all three choices at once, so it says which
+            // one it wants instead of asking for "the next one".
+            m_settings.theme = std::clamp(request.value, 0, 2);
             (void)m_settings.Save();
             SetStatus(m_settings.theme == 0 ? L"主题：浅色"
                     : m_settings.theme == 1 ? L"主题：深色"
@@ -871,13 +977,30 @@ void Service::HandleAction(const PanelRequest& request)
         case PanelAction::OpenLog:
         {
             const std::filesystem::path file = util::LogFile();
-            const HINSTANCE opened =
-                ::ShellExecuteW(m_panel.Handle(), L"open", file.c_str(), nullptr, nullptr,
-                    SW_SHOWNORMAL);
-
-            if (reinterpret_cast<INT_PTR>(opened) <= 32)
+            std::error_code missing;
+            if (!std::filesystem::exists(file, missing))
             {
-                SetStatus(L"打不开日志文件", true);
+                // The first write happens at startup, so this is unusual; say which file is
+                // missing instead of letting ShellExecute turn it into a generic Windows dialog.
+                util::LogWarn(L"log file is missing: {}", file.wstring());
+                SetStatus(L"日志文件还没生成", true);
+                return;
+            }
+
+            const auto launch = [this](const wchar_t* verb, const wchar_t* target,
+                                    const std::wstring& arguments) {
+                return reinterpret_cast<INT_PTR>(::ShellExecuteW(m_panel.Handle(), verb, target,
+                    arguments.empty() ? nullptr : arguments.c_str(), nullptr, SW_SHOWNORMAL));
+            };
+
+            if (launch(L"open", file.c_str(), {}) <= 32
+                && launch(L"open", L"notepad.exe", std::format(L"\"{}\"", file.wstring())) <= 32
+                && launch(L"open", L"explorer.exe",
+                       std::format(L"/select,\"{}\"", file.wstring()))
+                       <= 32)
+            {
+                util::LogWarn(L"no opener worked for the log: {}", file.wstring());
+                SetStatus(L"无法打开日志文件", true);
             }
             return;
         }
@@ -926,6 +1049,14 @@ void Service::HandleAction(const PanelRequest& request)
             return;
         }
 
+        case PanelAction::NewNote:
+            m_notes.NewNote();
+            return;
+
+        case PanelAction::ShowNotes:
+            m_notes.ShowAll();
+            return;
+
         case PanelAction::ReopenNote:
         {
             const bool ok = m_notes.Reopen(request.target);
@@ -944,6 +1075,37 @@ void Service::HandleAction(const PanelRequest& request)
             SetStatus(ok ? util::i18n::Cstr(L"已从历史中删除") : util::i18n::Cstr(L"便签已不存在"),
                 !ok);
             m_panel.Refresh();
+            return;
+        }
+
+        case PanelAction::SetNotePalette:
+        {
+            core::SetNotePalette(request.colors);
+
+            // What is written is what was accepted, not what was asked for: SetNotePalette falls
+            // back to the built-in papers when the count is out of range, and a settings file that
+            // disagreed with the notes on screen would come back different on the next start.
+            std::wstring value;
+            if (core::NotePaletteIsCustom())
+            {
+                for (int index = 0; index < core::NoteThemeCount(); ++index)
+                {
+                    if (index > 0)
+                    {
+                        value += L",";
+                    }
+                    value += std::format(L"{:06X}", core::NoteThemeAt(index).paper);
+                }
+            }
+
+            if (value != m_settings.noteThemes)
+            {
+                m_settings.noteThemes = value;
+                (void)m_settings.Save();
+            }
+
+            m_notes.ApplyPalette(request.index);
+            SetStatus(util::i18n::Format(L"便签配色：{} 种", core::NoteThemeCount()));
             return;
         }
 
@@ -1135,19 +1297,6 @@ void Service::SetStatus(std::wstring text, bool isError)
     m_status = std::move(text);
     m_statusIsError = isError;
 
-    // Every record is kept, including the successes: three lines of context is what turns "贴图
-    // 失败" into something a user can act on. A failure is never dropped early - it is only
-    // pushed out by three later records.
-    if (!m_status.empty())
-    {
-        m_history.push_front(StatusEntry{ m_status,
-            isError ? StatusKind::Error : StatusKind::Ok });
-        while (m_history.size() > 3)
-        {
-            m_history.pop_back();
-        }
-    }
-
     SyncTrayTooltip();
     m_panel.Refresh();
 }
@@ -1173,6 +1322,10 @@ PanelState Service::ReadState()
     state.autoLayout = m_settings.autoRestoreLayout;
     state.autostart = IsAutostartEnabled();
     state.darkTheme = DarkTheme();
+    // The settings as written, alongside the theme the window actually resolved to: the config
+    // page offers "follow the system" as a choice, so it needs the choice, not its outcome.
+    state.theme = std::clamp(m_settings.theme, 0, 2);
+    state.language = std::clamp(m_settings.language, 0, 2);
 
     // The switch reflects the window, not the setting: a widget that failed to start must not
     // look switched on.
@@ -1184,9 +1337,13 @@ PanelState Service::ReadState()
 
     state.status = m_status;
     state.statusIsError = m_statusIsError;
-    state.history.assign(m_history.begin(), m_history.end());
 
+    // Starred notes ride at the front, newest still winning inside each group: the archive is
+    // newest-first, and a stable partition keeps that order where the star does not care.
     state.archivedNotes = m_notes.Archived();
+    std::stable_sort(state.archivedNotes.begin(), state.archivedNotes.end(),
+        [](const core::ArchiveRecord& left, const core::ArchiveRecord& right)
+        { return left.starred && !right.starred; });
     state.hotkeys = m_settings.hotkeys;
     state.snapshotAt = SavedLayoutTimestamp();
 

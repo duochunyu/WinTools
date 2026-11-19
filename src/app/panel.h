@@ -32,6 +32,20 @@ enum class PanelAction
     /// Re-render and re-apply every group using the framings currently in the model.
     RecropWallpaper,
 
+    /// Rotate the active group's picture clockwise by one quarter turn, and re-render straight
+    /// away. A short click on the arc handle is still the quick way to step 90 degrees.
+    RotateWallpaper,
+
+    /// The drag handle released at an arbitrary angle: request.view carries the final framing.
+    /// Commits it to the group and re-renders the desktop slices once, on release.
+    CommitWallpaperRotation,
+
+    /// Open one more sticky note.
+    NewNote,
+
+    /// Bring every sticky note back to the top of the z-order, the way the tray menu does.
+    ShowNotes,
+
     /// Put back whatever the desktop showed before the first apply.
     RestoreWallpaper,
 
@@ -57,11 +71,11 @@ enum class PanelAction
     /// -1 means "into a group of its own".
     MoveMonitorToGroup,
 
-    /// Light -> dark -> follow the system. Stored, because a theme that resets on every launch is
-    /// not a setting.
-    CycleTheme,
+    /// Pick the UI theme from the config page. value is 0 = light, 1 = dark, 2 = follow the
+    /// system. Stored, and applied immediately.
+    SetTheme,
 
-    /// Pick the UI language from the title-bar dropdown. value is 0 = follow the system,
+    /// Pick the UI language from the config page. value is 0 = follow the system,
     /// 1 = Simplified Chinese, 2 = English. Applied immediately; the panel is refreshed so
     /// every label is measured again in the new language.
     SetLanguage,
@@ -95,6 +109,11 @@ enum class PanelAction
     /// virtual-desktop pixels; the size is unchanged.
     MoveCanvas,
 
+    /// Replace the note paper palette with `colors` (2-5 RRGGBB values). An empty list puts the
+    /// built-in six back. Applied to the open notes at once, so the panel's swatches and the notes
+    /// on screen never disagree.
+    SetNotePalette,
+
     Quit,
 };
 
@@ -120,22 +139,14 @@ struct PanelRequest
     /// The device path, not the row index, because a display can be unplugged between the paint
     /// and the click - and then the row the panel still shows points at a different display.
     std::wstring target;
+
+    /// The whole palette for SetNotePalette: 2-5 RRGGBB papers, or empty for the built-in six.
+    /// A list rather than a diff, because the panel is the one that let the user edit it and the
+    /// service should not have to replay edits to arrive at the same answer.
+    std::vector<std::uint32_t> colors;
 };
 
 /// How a status line reads, which is also its colour.
-enum class StatusKind
-{
-    Info,
-    Ok,
-    Error,
-};
-
-struct StatusEntry
-{
-    std::wstring text;
-    StatusKind kind{ StatusKind::Info };
-};
-
 /// One row of the window list.
 struct WindowRow
 {
@@ -180,6 +191,12 @@ struct PanelState
     bool autostart{};
     bool darkTheme{};
 
+    /// settings.txt's own values, not the resolved result: 0 light / 1 dark / 2 follow the system,
+    /// and 0 follow the system / 1 Chinese / 2 English. The config page shows the *choice* - "follow
+    /// the system" is something a user can pick, and a two-state widget cannot show it.
+    int theme{};
+    int language{};
+
     /// The desktop calendar: up or down, and where its square is on the virtual desktop.
     bool canvasOn{};
     core::CanvasRect canvas{};
@@ -188,12 +205,9 @@ struct PanelState
     bool busy{};
     std::wstring busyLabel;
 
-    /// The most recent status line only. The history below is what keeps failures visible.
+    /// The most recent status line, shown in the shared footer on every page.
     std::wstring status;
     bool statusIsError{};
-
-    /// Newest first, at most three. An error is not dropped because a later success happened.
-    std::vector<StatusEntry> history;
 
     [[nodiscard]] bool HasRows() const
     {
@@ -240,6 +254,15 @@ class Panel
 public:
     using ActionHandler = std::function<void(const PanelRequest&)>;
     using StateProvider = std::function<PanelState()>;
+
+    /// The four pages of the tabbed sheet, in the order the tabs stand in.
+    enum class Tab
+    {
+        Layout,
+        Wallpaper,
+        Notes,
+        Config,
+    };
 
     Panel(ActionHandler onAction, StateProvider readState);
     ~Panel();
@@ -290,9 +313,14 @@ public:
     struct MapContext
     {
         core::Rect canvas{};
+        /// The picture's size **before** the group's turn. The framing maths turns it itself; a
+        /// turned bounding box is bigger than the picture and would leave the corners empty.
         core::ImageSize source{};
         /// Map pixels per canvas pixel.
         double scale{ 1.0 };
+
+        /// The clockwise angle this context was built with; the preview cache key needs it.
+        double rotation{ 0.0 };
 
         [[nodiscard]] bool IsValid() const
         {
@@ -313,8 +341,18 @@ public:
     [[nodiscard]] static MapFrame FrameFor(
         const MapContext& context, const core::WallpaperView& view);
 
-    /// Size of the cached preview bitmap, in pixels: the picture cover-fitted at zoom 1.
+    /// Size of the cached surface, in pixels: the whole picture cover-fitted at zoom 1, before the
+    /// canvas crops anything out of it.
     [[nodiscard]] static SIZE PreviewSize(const MapContext& context);
+
+    /// The angle a turn gesture should show: `start` plus `delta`, quantised and magnetised.
+    ///
+    /// A turn is only exact at a multiple of 90 - everywhere else the renderer resamples - so the
+    /// four angles that matter are the four that hold. Capture is wide enough to catch what the eye
+    /// calls square and release is wider still, which makes arriving easy and leaving deliberate;
+    /// `snap` carries the held angle between calls, because hysteresis is state by definition. It
+    /// is reset to -1 on press.
+    [[nodiscard]] static double TurnAngle(double start, double delta, int& snap);
 
     /// Moves the framing by a mouse delta in map pixels, with the picture following the cursor.
     [[nodiscard]] static core::WallpaperView PanView(const core::WallpaperView& view,
@@ -342,19 +380,6 @@ public:
     [[nodiscard]] static MapSample SampleFor(const MapFrame& frame,
         const core::Rect& monitorRect, const core::WallpaperView& view);
 
-    /// How much of the sheet a work area can hold: map height and list rows.
-    struct SheetFit
-    {
-        int mapHeight{};
-        int rows{};
-    };
-
-    /// Client height the sheet needs for a given map height and row count, in design units.
-    [[nodiscard]] static int SheetHeight(int mapHeight, int rows);
-
-    /// How much of a work area a given scale can hold. workAreaHeight is in design units too.
-    [[nodiscard]] static SheetFit FitSheet(int workAreaHeight);
-
     /// A design measurement in device pixels at the given scale factor.
     [[nodiscard]] static int ForDpi(int value, UINT dpi);
 
@@ -381,14 +406,16 @@ private:
     {
         None,
         IconLanguage,
-        IconMenu,
         IconTheme,
         IconHelp,
         IconClose,
+        Tab,          // index = 0 layout, 1 wallpaper, 2 notes, 3 config
         GroupChip,   // index = group slot
         GroupAdd,    // index = group slot
         Pick,
         ApplyWallpaper,
+        RotateWallpaper,
+        ResetRotation, // puts the picture back to square, the turn readout's own button
         ScreenChip,  // index = monitor index
         AutoLayout,
         Refresh,
@@ -399,10 +426,24 @@ private:
         MapBody,
         CanvasSwitch,
         CanvasBody,
-        ArchiveRestore, // index = row in m_state.archivedNotes
-        ArchiveForget,  // index = row in m_state.archivedNotes
+        NewNote,
+        ShowNotes,
+        NoteColors, // the paper palette editor, first button on the notes page
+        ArchiveRestore, // index = row in m_state.archivedNotes (absolute, not the page row)
+        ArchiveForget,  // index = row in m_state.archivedNotes (absolute, not the page row)
+        ArchivePrev,    // one page back in the closed-note history
+        ArchiveNext,    // one page on
+        /// The config page's rows. The switches and the segmented controls carry an index: the
+        /// segment chosen for the first two, the HotkeyAction for a shortcut row.
+        ConfigTheme,
+        ConfigLanguage,
+        ConfigAutostart,
+        ConfigHotkey,
+        ConfigResetHotkeys,
+        ConfigOpenLog,
         Quit,
         PopupItem,   // index = item within the open popup
+        PopupRemove, // index = the popup row whose trailing "x" was hit
         ModalButton, // index = button within the open modal
     };
 
@@ -422,9 +463,27 @@ private:
         int id{ -1 };
         /// Group slot for the colour pip, -1 for none, -2 for a neutral dot.
         int pipIndex{ -1 };
+        /// A literal colour for the pip, used by the note-palette rows. Takes precedence over
+        /// pipIndex; `hasSwatch` is what says "draw this one" rather than "draw a group colour".
+        std::uint32_t swatch{};
+        bool hasSwatch{};
+        /// The row can be deleted through a small "×" in its trailing column. Only rows whose menu
+        /// is a list the user owns - today just the note papers - carry one.
+        bool removable{};
         bool dashed{};
         bool separator{};
         bool checked{};
+    };
+
+    /// What a config row does when clicked. Painting and hit testing both read this, so a row
+    /// cannot be drawn as a switch and behave like a button.
+    enum class ConfigControl
+    {
+        Switch,   ///< a track and a knob on the right; the state is `on`
+        Segments, ///< two or three choices, the current one in `selected`
+        Hotkey,   ///< the whole row starts recording; `value` is the combination or the hint
+        Link,     ///< the whole row runs something, with a trailing chevron
+        Button,   ///< only the button on the right is clickable
     };
 
     /// Geometry for one frame, computed once per paint and once per hit-test so the two can
@@ -433,25 +492,41 @@ private:
     {
         RECT titleBar{};
         RECT iconLanguage{};
-        RECT iconMenu{};
         RECT iconTheme{};
         RECT iconHelp{};
         RECT iconClose{};
+
+        /// The four page tabs, left to right, and the bar they stand in.
+        RECT tabBar{};
+        RECT tabLayout{};
+        RECT tabWallpaper{};
+        RECT tabNotes{};
+        RECT tabConfig{};
 
         RECT wallHead{};
         RECT pick{};
         RECT applyWallpaper{};
 
+        /// The rotate handle: a Lucide refresh-cw glyph inside a small chip, floating just
+        /// outside one corner of the selected group's box. `rotateWallpaper` is its hit square,
+        /// `rotateCentre` its centre. Hit and paint both use these, so they cannot disagree.
+        RECT rotateWallpaper{};
+        POINT rotateCentre{};
+        int rotateRadius{};
+
         RECT wallHint{};
         RECT zoomBadge{};
+        /// The angle the picture is turned to, and the button that puts it back to zero. Both sit
+        /// in the hint row, because the readout has to be visible at the same moment the hand is
+        /// on the handle, and the handle moves with the group.
+        RECT rotateBadge{};
+        RECT resetRotation{};
         RECT dirtyBadge{};
         RECT groupMeta{};
         RECT canvasSwitch{};
 
         RECT mapCard{};
         RECT mapArea{};
-
-        int divider{};
 
         RECT layoutHead{};
         RECT autoSwitch{};
@@ -472,15 +547,54 @@ private:
         RECT statusText{};
         RECT quit{};
 
-        RECT history{};
+        /// The notes page's head row: title and its two buttons.
+        RECT notesHead{};
+        RECT newNote{};
+        RECT showNotes{};
+        RECT noteColors{};
 
         /// Closed-note history block. Empty when there is nothing archived. Rows carry the same
         /// index as m_state.archivedNotes; the two buttons hit-test separately from the row.
         RECT archiveCard{};
-        RECT archiveHead{};
+        /// The list's meta row above the card: title on the left, paging on the right.
+        RECT archiveMeta{};
+        /// The slice of the archive the card is showing: first row index into
+        /// m_state.archivedNotes and how many rows the card could hold at this window height.
+        /// The head line reads the range; the wheel scrolls the first index.
+        int archiveFirst{};
+        int archiveRowsCapacity{};
         std::vector<RECT> archiveRows;
         std::vector<RECT> archiveRestore;
         std::vector<RECT> archiveForget;
+        /// Page arrows at the right end of the history head, and the "2 / 5" label between them
+        /// and the title. Paging moves by a whole cardful, which is what the wheel does too.
+        RECT archivePrev{};
+        RECT archiveNext{};
+        RECT archivePage{};
+
+        /// The config page, top to bottom, in one list. A heading is an entry with `section` set
+        /// and no control; every other entry is a row. Paint and hit test walk the same list, so a
+        /// heading and its rows cannot drift apart.
+        struct ConfigRow
+        {
+            RECT rect{};
+            /// The clickable control: the switch track, or the button. Empty for the row kinds
+            /// where the whole row is the target.
+            RECT control{};
+            /// One rect per choice, for a segmented row.
+            std::vector<RECT> segments;
+            /// The names of those choices, in the same order as `segments`.
+            std::vector<std::wstring> choices;
+            std::wstring label;
+            std::wstring value;
+            Hot hot{ Hot::None };
+            ConfigControl kind{ ConfigControl::Link };
+            int index{ -1 };
+            int selected{ -1 };
+            bool on{};
+            bool section{};
+        };
+        std::vector<ConfigRow> configRows;
 
         /// One entry per group that has an attached member, in chip order.
         std::vector<RECT> groupChips;
@@ -531,7 +645,10 @@ private:
     /// scale is the only way the layout and the pixels agree; when they do not, the symptom is a
     /// label that runs into its own plate.
     void ScaleMeasureDc();
-    void ResizeToContent();
+
+    /// Brings the window back inside the monitor's work area, no size changes. The window is
+    /// user-resizable, so nothing about the model changes its size any more.
+    void ConstrainToWorkArea();
     void CentreOnCursorMonitor();
 
     void Paint();
@@ -541,8 +658,22 @@ private:
 
     void PaintSheet(HDC dc, const Geometry& geometry);
     void PaintTitleBar(HDC dc, const Geometry& geometry);
+    void PaintTabBar(HDC dc, const Geometry& geometry);
     void PaintWallpaperBlock(HDC dc, const Geometry& geometry);
+    void PaintNotesHead(HDC dc, const Geometry& geometry);
+    void PaintConfigBlock(HDC dc, const Geometry& geometry);
     void PaintMap(HDC dc, const Geometry& geometry);
+
+    /// The whole picture of the group being turned or moved, dimmed wherever no display of that
+    /// group will receive it.
+    ///
+    /// Painted before the display loop, which then draws the screens themselves at full strength
+    /// over it: the spill is context, the screens are the answer. A turn enlarges the cover on its
+    /// own, a move shifts the window into a picture that no longer fits the screens - both leave
+    /// the user looking at slices, which is why both ask for this.
+    void PaintWholePicture(
+        HDC dc, const Geometry& geometry, const MapLayout& map, int slot, bool coarse);
+
     void DrawScreenBadge(HDC dc, const RECT& box, int index);
 
     /// One outline around the union of a group's screens.
@@ -557,7 +688,6 @@ private:
     void PaintWindowList(HDC dc, const Geometry& geometry);
     void PaintScrollbar(HDC dc, const Geometry& geometry);
     void PaintFooter(HDC dc, const Geometry& geometry);
-    void PaintHistory(HDC dc, const Geometry& geometry);
     void PaintArchive(HDC dc, const Geometry& geometry);
     void PaintOverlays(HDC dc, const Geometry& geometry);
     void PaintPopup(HDC dc, const Geometry& geometry);
@@ -615,24 +745,29 @@ private:
     /// drawn - including by the hit test.
     HDC m_measure{};
 
-    /// Decoded preview of one group's picture, kept between frames.
+    /// Decoded preview of one group's picture, kept between frames. The angle and the quality
+    /// tier are both part of the cache key: turning changes the pixels, and a coarse drag frame
+    /// must not be reused once the handle is released.
     struct GroupPreview
     {
         int slot{ -1 };
         std::wstring path;
+        double rotation{ 0.0 };
+        bool coarse{};
         int width{};
         int height{};
         HBITMAP bitmap{};
 
-        [[nodiscard]] bool Matches(int candidateSlot, const std::wstring& candidate, int w,
-            int h) const
+        [[nodiscard]] bool Matches(int candidateSlot, const std::wstring& candidate, double r,
+            bool c, int w, int h) const
         {
-            return bitmap != nullptr && slot == candidateSlot && path == candidate && width == w
-                && height == h;
+            return bitmap != nullptr && slot == candidateSlot && path == candidate
+                && std::abs(rotation - r) < 0.01 && coarse == c && width == w && height == h;
         }
     };
 
-    [[nodiscard]] HBITMAP PreviewFor(int slot, const std::wstring& path, int width, int height);
+    [[nodiscard]] HBITMAP PreviewFor(
+        int slot, const std::wstring& path, double rotation, int width, int height, bool coarse);
     void ReleasePreviews();
 
     struct SourceSizeEntry
@@ -645,7 +780,14 @@ private:
     [[nodiscard]] core::ImageSize SourceSizeFor(const std::wstring& path);
 
     [[nodiscard]] MapContext ContextForGroup(
-        const Projection& projection, const core::Group& group);
+        const Projection& projection, const core::Group& group, const core::WallpaperView& view);
+
+    /// Picks a corner of the selected group's box whose outward quadrant covers no other
+    /// display, then pins the two-headed arc handle there. Computed inside ComputeGeometry so
+    /// paint and hit-test always see the same placement.
+    void PlaceRotateArc(Geometry& geometry) const;
+    void PaintRotateArc(HDC dc, const Geometry& geometry) const;
+    [[nodiscard]] bool HitRotateArc(POINT point, const Geometry& geometry) const;
 
     /// Current framing of the active group. Kept here rather than read from the state on every
     /// paint so a drag shows its result immediately instead of waiting for the round trip.
@@ -656,6 +798,28 @@ private:
     bool m_panning{};
     POINT m_panOrigin{};
     core::WallpaperView m_panStart{};
+
+    /// Continuous turn gesture on the turn chip. Steering is by arc length, not by pointer angle:
+    /// the cursor travels along the circle it started on, and the picture turns by that distance
+    /// over the starting radius - slower than 1:1, and it cannot accelerate when the drag wanders
+    /// towards the centre. A short click with no movement still steps a quarter turn.
+    bool m_rotating{};
+    bool m_rotationMoved{};
+    POINT m_rotationLast{};
+    /// Where the press landed. A gesture that travels is a drag even when the angle has not moved
+    /// yet - the right-angle deadband swallows the first few degrees, and a drag that ends inside
+    /// it must not be mistaken for a click and step a whole quarter turn.
+    POINT m_rotationOrigin{};
+    /// The centre of the group's box at press: the circle the hand is steering around, and the
+    /// pivot the picture turns about. Not the chip, which is only a grip.
+    POINT m_rotationCentre{};
+    double m_rotationRadius{ 120.0 };
+    double m_rotationDelta{};
+    core::WallpaperView m_rotationStart{};
+    /// The right angle the gesture is currently held on, or a negative value when it is free.
+    /// Capture and release use different distances, which is what makes the angle stick: 2.5
+    /// degrees are enough to arrive, 6 are needed to leave.
+    int m_rotationSnap{ -1 };
 
     /// Calendar drag: a move gesture, not a resize. The new position is committed on release so
     /// the settings file is not rewritten once per mouse move.
@@ -680,20 +844,24 @@ private:
     enum class Popup
     {
         None,
-        AppMenu,
         LanguageMenu, // anchored at the title-bar language button
-        HotkeyMenu,   // anchored at the gear; rows rebind shortcuts on a key press
         GroupJoin,  // anchored at a screen number
         GroupMerge, // anchored at the active chip's plus
+        NoteColors, // anchored at the notes page's palette button
     };
 
     Popup m_popup{ Popup::None };
+
+    /// Which page of the tabbed sheet is on show. Defaults to the layout, the page the panel
+    /// exists for; the choice is session-local, not a setting.
+    Tab m_tab{ Tab::Layout };
     int m_popupIndex{ -1 }; // monitor index, for the screen the group menu belongs to
     POINT m_popupAt{};
     int m_popupItem{ -1 };
 
-    /// Which shortcut row is waiting for a key press while HotkeyMenu is open. -1 means the menu
-    /// is idle; 1 / 2 are HotkeyAction values, matching the popup item ids.
+    /// Which shortcut row on the config page is waiting for a key press. -1 means nothing is being
+    /// recorded; otherwise it is a HotkeyAction value. While it is set the global combinations are
+    /// unregistered, so the key being recorded reaches this window instead of firing the old one.
     int m_recordingAction{ -1 };
 
     enum class Modal
@@ -715,9 +883,6 @@ private:
 
     [[nodiscard]] ModalLayout LayoutModal(const Geometry& geometry) const;
 
-    /// Whether the three-record history strip under the footer is open.
-    bool m_historyOpen{};
-
     /// Undo for the last tick change.
     int m_undoRow{ -1 };
     bool m_undoValue{};
@@ -730,12 +895,21 @@ private:
 
     void Activate(const Target& target);
     void ActivatePopup(int item);
+    /// Drops one row from the note palette. Separate from ActivatePopup because it has to put the
+    /// menu back afterwards: the user is usually removing one paper among several, not finishing.
+    void ActivatePopupRemove(int item);
+
+    /// Hands a paper palette to the service and reopens the editor on the result. Empty means the
+    /// built-in set. `removed` is the index that went away, or -1 for an edit, an addition or a
+    /// reset: the notes' paper indexes shift when one is dropped, and only the caller knows which.
+    void ApplyPapers(std::vector<std::uint32_t> papers, int removed = -1);
+
     void ActivateModal(int button);
 
     void OpenPopup(Popup kind, POINT anchor, int index);
     // A hotkey row is activated by closing the menu first. That must not re-arm the global
     // combinations: the key about to be recorded may be one of them.
-    void ClosePopup(bool keepHotkeysSuspended = false);
+    void ClosePopup();
 
     /// Turns one screen number on or off in the filter. An empty filter means "all".
     void ToggleFilter(int monitorIndex);
@@ -756,9 +930,19 @@ private:
     /// preference, so it is deliberately not written to disk.
     std::vector<std::wstring> m_filter;
 
-    int m_maxRows{ 12 };
-    int m_mapHeight{ 264 };
+    /// Client size in design units, re-derived from the window on every geometry pass. The
+    /// window opens at 4:3 and is user-resizable, so these are inputs the layout adapts to, not
+    /// consequences of the model. Mutable because every const hit-test member recomputes them.
+    mutable int m_clientW{ 820 };
+    mutable int m_clientH{ 615 };
+
+    /// First visible row of the window list.
     int m_scroll{};
+
+    /// First visible row of the notes page's history card. The card holds as many rows as the
+    /// window's height allows and wheels through the rest. Mutable for the same reason as the
+    /// client size: the const geometry pass clamps it to the slice it can actually show.
+    mutable int m_archiveScroll{ 0 };
 
     UINT m_dpi{ 96 };
 

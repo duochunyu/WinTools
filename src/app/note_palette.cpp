@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include <objidl.h>
+#include <gdiplus.h>
 #include <windowsx.h>
 
 #include "core/note_theme.h"
@@ -29,13 +31,21 @@ COLORREF ToRef(std::uint32_t rgb)
     return RGB((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
 }
 
-COLORREF Mix(COLORREF from, COLORREF to, int percentOfTo)
+Gdiplus::Color ToGdiplus(COLORREF color)
 {
-    const auto channel = [percentOfTo](int a, int b)
-    { return (a * (100 - percentOfTo) + b * percentOfTo + 50) / 100; };
+    return Gdiplus::Color(255, GetRValue(color), GetGValue(color), GetBValue(color));
+}
 
-    return RGB(channel(GetRValue(from), GetRValue(to)), channel(GetGValue(from), GetGValue(to)),
-        channel(GetBValue(from), GetBValue(to)));
+/// Same one-time startup as the note window's copy: GDI+ is initialised process-wide and never
+/// shut down, because the token has to outlive every window that draws with it.
+bool GdiplusReady()
+{
+    static ULONG_PTR token = 0;
+    static const bool ready = [] {
+        Gdiplus::GdiplusStartupInput input;
+        return Gdiplus::GdiplusStartup(&token, &input, nullptr) == Gdiplus::Ok;
+    }();
+    return ready;
 }
 
 } // namespace
@@ -81,8 +91,8 @@ void PalettePopup::Show(
         registered = true;
     }
 
-    const int width = Scale(2 * kPadDesign + core::kNoteThemeCount * kSwatchDesign
-        + (core::kNoteThemeCount - 1) * kGapDesign);
+    const int count = core::NoteThemeCount();
+    const int width = Scale(2 * kPadDesign + count * kSwatchDesign + (count - 1) * kGapDesign);
     const int height = Scale(2 * kPadDesign + kSwatchDesign);
 
     RECT client{};
@@ -258,7 +268,7 @@ RECT PalettePopup::SwatchRect(int index) const
 
 int PalettePopup::SwatchAt(POINT client) const
 {
-    for (int index = 0; index < core::kNoteThemeCount; ++index)
+    for (int index = 0; index < core::NoteThemeCount(); ++index)
     {
         const RECT box = SwatchRect(index);
         if (client.x >= box.left && client.x < box.right && client.y >= box.top
@@ -273,55 +283,59 @@ int PalettePopup::SwatchAt(POINT client) const
 
 void PalettePopup::Paint(HDC dc) const
 {
+    if (!GdiplusReady())
+    {
+        return;
+    }
+
     RECT client{};
     ::GetClientRect(m_window, &client);
 
-    // The chip is the note's own header tone rather than white: it is sitting on paper, and a white
-    // slab on a warm note reads as a dialog that lost its way onto the desktop.
+    // The chip is the note's own paper and nothing else: no plate, no border. A framed slab on a
+    // warm note reads as a dialog that lost its way onto the desktop; an unframed strip of paper
+    // reads as part of the sheet, which is what swatches are.
     const HBRUSH backdrop = ::CreateSolidBrush(m_backdrop);
     ::FillRect(dc, &client, backdrop);
     ::DeleteObject(backdrop);
 
-    const HPEN edge = ::CreatePen(PS_SOLID, std::max(1, Scale(1)), Mix(m_backdrop, kRing, 18));
-    const HGDIOBJ oldPen = ::SelectObject(dc, edge);
-    const HGDIOBJ oldBrush = ::SelectObject(dc, ::GetStockObject(NULL_BRUSH));
-    ::Rectangle(dc, 0, 0, client.right, client.bottom);
-    ::SelectObject(dc, oldBrush);
-    ::SelectObject(dc, oldPen);
-    ::DeleteObject(edge);
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
 
-    for (int index = 0; index < core::kNoteThemeCount; ++index)
+    for (int index = 0; index < core::NoteThemeCount(); ++index)
     {
         const RECT box = SwatchRect(index);
+        const float left = static_cast<float>(box.left);
+        const float top = static_cast<float>(box.top);
+        const float size = static_cast<float>(box.right - box.left);
 
-        // The swatch is drawn as a disc, one pixel smaller than its box, so the ring around the
-        // current paper has somewhere to go.
-        const HBRUSH fill = ::CreateSolidBrush(ToRef(core::NoteThemeAt(index).paper));
-        const HPEN ring = ::CreatePen(PS_SOLID, 1,
-            index == m_current ? kRing
-                               : ToRef(core::BlendColor(core::NoteThemeAt(index).paper, 0x37352F, 22)));
+        // The disc itself. Anti-aliasing is the whole point of drawing these through GDI+ rather
+        // than ::Ellipse: a hard-edged circle at 24 px carries a visible staircase on every curve.
+        Gdiplus::SolidBrush fill(ToGdiplus(ToRef(core::NoteThemeAt(index).paper)));
+        graphics.FillEllipse(&fill, left, top, size, size);
 
-        const HGDIOBJ previousPen = ::SelectObject(dc, ring);
-        const HGDIOBJ previousBrush = ::SelectObject(dc, fill);
-        ::Ellipse(dc, box.left, box.top, box.right, box.bottom);
-        ::SelectObject(dc, previousBrush);
-        ::SelectObject(dc, previousPen);
-        ::DeleteObject(ring);
-        ::DeleteObject(fill);
+        // The ring separates a swatch from papers close to its own tone. A 2px band on a 24px disc
+        // read as a tyre around the colour rather than as a selection, so the current paper now
+        // takes a 1.5px hairline drawn *inside* the disc - it marks the choice without eating the
+        // swatch - and the rest keep a one-pixel edge that only separates neighbours.
+        const bool current = index == m_current;
+        const float ringWidth = current ? std::max(1.5F, static_cast<float>(Scale(1)) * 1.5F) : 1.0F;
+        const float inset = current ? ringWidth / 2.0F : 0.0F;
+        Gdiplus::Pen ring(ToGdiplus(current ? kRing
+                                : ToRef(core::BlendColor(
+                                      core::NoteThemeAt(index).paper, 0x37352F, 22))),
+            ringWidth);
+        graphics.DrawEllipse(&ring, left + inset, top + inset, size - inset * 2.0F,
+            size - inset * 2.0F);
 
-        if (index == m_current || index == m_hover)
+        // Hover keeps the old halo idea but drawn anti-aliased, one ring outside the disc.
+        if (index == m_hover && !current)
         {
-            const HBRUSH hollow = static_cast<HBRUSH>(::GetStockObject(NULL_BRUSH));
-            const HPEN halo = ::CreatePen(PS_SOLID, index == m_current ? 2 : 1,
-                index == m_current ? kRing : ToRef(core::BlendColor(m_backdrop, 0x37352F, 40)));
-
-            const HGDIOBJ previousPen2 = ::SelectObject(dc, halo);
-            const HGDIOBJ previousBrush2 = ::SelectObject(dc, hollow);
-            ::Ellipse(dc, box.left - Scale(2), box.top - Scale(2), box.right + Scale(2),
-                box.bottom + Scale(2));
-            ::SelectObject(dc, previousBrush2);
-            ::SelectObject(dc, previousPen2);
-            ::DeleteObject(halo);
+            const Gdiplus::Pen halo(
+                ToGdiplus(ToRef(core::BlendColor(ToRef(m_backdrop), 0x37352F, 40))), 1.0F);
+            const float outset = static_cast<float>(Scale(2));
+            graphics.DrawEllipse(&halo, left - outset, top - outset, size + outset * 2.0F,
+                size + outset * 2.0F);
         }
     }
 }

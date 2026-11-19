@@ -7,7 +7,7 @@
 namespace wintools::app
 {
 
-/// The six papers, offered as swatches right under the note's colour dot.
+/// The live papers, offered as swatches right under the note's colour dot.
 ///
 /// A child window of the note rather than a popup with the mouse capture. The capture version was
 /// the reason the note's own buttons stopped responding: while the palette held it, every click on

@@ -88,13 +88,14 @@ using MonitorImageLookup = std::function<std::filesystem::path(const std::wstrin
 int RemoveStalePieces(
     const std::filesystem::path& outputFolder, std::span<const RenderedPiece> keep);
 
-/// A small, cover-cropped copy of an image laid out the way the shell will lay the wallpaper
-/// out on the virtual desktop.
+/// A small copy of an image, laid out the way the shell will lay the wallpaper out on the virtual
+/// desktop - and, unlike the wallpaper itself, not cropped to that desktop.
 ///
-/// Used by the panel to draw the wallpaper inside the arrangement map. The crop is computed by
-/// the same ComputeSlice the real pipeline uses - with the whole canvas standing in for a single
-/// monitor - so the preview cannot drift away from what actually gets applied: if the source is
-/// letterboxed or off-centre here, it will be in the real thing too.
+/// Used by the panel to draw the wallpaper inside the arrangement map. The picture is cover-scaled
+/// to the group's canvas by the same ComputeSlack the real pipeline uses, so the part of it that
+/// lands on a display is exactly the part that gets applied. The margin that cover-scaling leaves
+/// outside the canvas is kept rather than cropped away: while the user turns the picture it is the
+/// only way to see how much of it a turn is pushing off the displays.
 struct PreviewBitmap
 {
     int width{};
@@ -109,8 +110,17 @@ struct PreviewBitmap
     }
 };
 
+/// The whole turned picture, scaled to exactly `width x height` and cropped by nothing.
+///
+/// `width`/`height` are the panel's PreviewSize() - the cover-scaled surface at zoom 1 - so the
+/// caller gets every pixel the renderer could ever slice, including the margin that lies outside
+/// the canvas. `rotation` is degrees clockwise; a quarter turn swaps the picture's dimensions and
+/// an oblique one grows the bounding box, both of which the caller's size already accounts for.
+///
 /// Returns nullopt when the image cannot be decoded or the requested size is not positive.
-[[nodiscard]] std::optional<PreviewBitmap> RenderPreview(
-    const std::filesystem::path& sourceImage, int width, int height, const WallpaperView& view = {});
+/// `coarse` trades resolution for speed: the source is downscaled before the turn, which is what
+/// keeps a continuous drag responsive while the released frame still renders at full quality.
+[[nodiscard]] std::optional<PreviewBitmap> RenderSurface(const std::filesystem::path& sourceImage,
+    int width, int height, double rotation = 0.0, bool coarse = false);
 
 } // namespace wintools::core

@@ -134,7 +134,8 @@ NoteStore ParseNoteIndex(std::wstring_view text)
             continue;
         }
 
-        // note<TAB>id<TAB>x<TAB>y<TAB>w<TAB>h<TAB>theme
+        // note<TAB>id<TAB>x<TAB>y<TAB>w<TAB>h<TAB>theme<TAB>starred
+        // The last two fields are optional and an older index simply stops earlier.
         std::wistringstream fields(line);
         std::wstring kind;
         std::wstring id;
@@ -174,6 +175,13 @@ NoteStore ParseNoteIndex(std::wstring_view text)
             record.theme = ClampNoteTheme(storedTheme);
         }
 
+        // Same tolerance, one field further: "1" stars the note, anything else leaves it plain.
+        std::wstring starred;
+        if (std::getline(fields, starred, L'\t'))
+        {
+            record.starred = starred == L"1";
+        }
+
         store.notes.push_back(std::move(record));
     }
 
@@ -192,8 +200,9 @@ std::wstring FormatNoteIndex(const NoteStore& store)
 
     for (const NoteRecord& note : store.notes)
     {
-        text += std::format(L"{}\t{}\t{}\t{}\t{}\t{}\t{}\n", kKeyNote, note.id, note.rect.left,
-            note.rect.top, note.rect.width, note.rect.height, ClampNoteTheme(note.theme));
+        text += std::format(L"{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", kKeyNote, note.id, note.rect.left,
+            note.rect.top, note.rect.width, note.rect.height, ClampNoteTheme(note.theme),
+            note.starred ? 1 : 0);
     }
 
     return text;

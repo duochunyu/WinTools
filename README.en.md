@@ -8,15 +8,16 @@ is unplugged or wakes up.
 A single-file executable with a statically linked CRT and no runtime dependencies. It lives in the
 system tray; double-click to open the settings panel. No installer, no writes to Program Files,
 no network access. The panel, tray menu, status messages, CLI help and log ship in both
-Simplified Chinese and English; the language can follow the system or be pinned from the title-bar dropdown.
+Simplified Chinese and English; the language can follow the system or be pinned from the config page
+or the title-bar menu.
 
 | | |
 |---|---|
 | OS | Windows 10 1809+ / Windows 11, x64 |
 | Version | v0.1.0 |
-| Binary | 915,456 bytes; imports only 7 system DLLs |
+| Binary | 1,207,296 bytes; imports only 9 system DLLs |
 | Built with | C++20 / Win32 / WIC / custom GDI rendering; no third-party libraries |
-| Tests | 167 unit tests, green in debug and release |
+| Tests | 183 unit tests, green in debug and release |
 
 ![WinTools settings panel](docs/panel-en.png)
 
@@ -39,16 +40,16 @@ Simplified Chinese and English; the language can follow the system or be pinned 
 | **Groups** | Each display belongs to one group; each group has one image, one framing and one set of member displays. Two-by-two spanning and four independent displays are the same model |
 | Framing | Drag to pan on the arrangement map, scroll to zoom around the cursor (1.0-8.0), double-click or press `0` to reset |
 | Wallpaper preview | The preview uses the same cover-crop code as the real wallpaper, so what you see on each display is what gets applied |
+| **Free-angle wallpaper turn** | A round turn button (Lucide icon) floats outside a corner of the active group on the wallpaper page - it picks a corner that covers no other display or the calendar switch. Drag to turn the picture to any angle, or click once for a quick clockwise 90 degrees; slices are regenerated on release and the angle is remembered with the group. The right angles snap, the hint row shows the live angle and offers a one-click way back to square, and while dragging or turning the map shows the whole picture with everything outside the displays dimmed by half - so "how far was it enlarged" and "how much room is left" are things you can see |
 | Remember window layouts | Positions recorded per display, including maximized, snapped and split ratios; windows follow their display when its origin shifts |
 | Automatic restore | 2-second debounce after a display reconnects or is removed; only windows that need moving are touched |
 | Per-window exclusion | The checkbox at the start of each row decides whether a window is remembered; unchecking never deletes the row |
-| Filter by display | Numeric chips in the layout section are multi-select; none selected means all |
-| Themes | Light / dark / follow system, cycled with the `◐` button, saved to disk |
-| UI languages | Simplified Chinese / English; the title-bar CN / EN button opens a dropdown with Follow system, Simplified Chinese and English. The choice is saved |
-| Status history | The footer keeps the last three results, so a failure is not wiped by the next success |
+| Filter by display | Numeric chips on the layout page are multi-select; none selected means all |
+| Themes | Light / dark / follow system; both the three-way control on the config page and the title-bar shortcut, saved to disk |
+| UI languages | Simplified Chinese / English; three-way control on the config page and a `CN` / `EN` title-bar menu, including follow-the-system. The choice is saved |
 | Full keyboard access | Tab focus ring, 1-9 to switch groups, `+ - 0` to zoom/reset, arrow keys to pan, Ctrl+Z to undo a checkbox, Esc to close popups |
 | Desktop calendar | A yin-yang perpetual calendar above the wallpaper: lunar date, solar term and almanac rings, plus a 10 Hz sweeping clock |
-| Sticky notes | Always-on-top notes: remembered position and size, six muted paper colours, a bare sheet with one line of save time and a page-edge rule at rest (three icons on hover), 0.7 s debounced autosave, region screenshots pasted into the text and draggable afterwards, closed notes recoverable from panel history, visual global hotkey configuration |
+| Sticky notes | Always-on-top notes: remembered position and size, five built-in muted papers, editable and extendable to 2-5 from the notes page's Colours button, a bare sheet with one line of save time and a page-edge rule at rest (five icons on hover: delete / paper colour / screenshot / close / star), lit stars stay visible in gold and follow the note into the archive, confirmed-only delete that keeps nothing, 0.7 s debounced autosave, region screenshots pasted into the text and draggable afterwards, closed notes recoverable from panel history, new-note and show-all buttons on the notes page (a new note opens on the display under the cursor), visual global hotkey configuration |
 | Tray and autostart | Tray menu: Change Wallpaper / Restore Wallpaper / Refresh Layout / Restore Layout / Desktop Calendar / New Note / Show All Notes / Quit; optional run at logon |
 
 ### 1.2 Groups: which displays share one image
@@ -87,13 +88,29 @@ uniformly into the card. Grid plus white gaps = desktop area not covered by any 
 - No translucent blocks, colour bars or inner strokes are drawn over the image; wallpaper colours
   stay true.
 - **Drag**: the picture follows the cursor, scoped to the current group. Dragging a display in
-  another group switches to that group first.
+  another group switches to that group first. A drag shows the whole picture with the margin
+  dimmed, so how much picture is left in the direction you are pushing is on screen. A turned
+  picture still moves in **any** direction: the limit is the picture's own edge, not the screen's
+  axes.
 - **Scroll wheel**: zoom anchored at the pixel under the cursor, 1.0-8.0x, 10% per notch. Small
   deltas from precision touchpads are handled as fractional notches.
 - **Double-click the display / `0`**: reset the framing. Dragging does not decode, write to disk
   or re-apply the wallpaper.
 - The "not applied" dot in the section header means the framing changed but was not applied yet;
   clicking "Apply Wallpaper" generates the slices.
+- **Turn**: a round handle floats outside one corner of the active group (Lucide `rotate-cw`;
+  the corner is picked so it covers no other display). Hold and drag to turn the picture to any
+  angle, or click for a clockwise quarter turn. The gear ratio is the arc the cursor travels over
+  the radius it was pressed at, times 0.32 - roughly three degrees of hand to one of picture. The
+  right angles are magnetic: within 2.5 degrees it snaps to 0/90/180/270, and leaving one costs
+  six more degrees.
+- **The whole picture while dragging or turning**: during the gesture the map draws the *entire*
+  picture, and whatever no display of that group will receive is dimmed by half. Release and it
+  returns to per-display slices. An oblique turn has to enlarge the picture for the corners (up to
+  1.41x at 45 degrees) - the dimmed margin is the answer to "enlarged where, cropped how much".
+- The hint row ends with `90° Square 100%`: the live angle and a one-click way back to square
+  (rotation only - zoom and framing stay).
+- The calendar switch floats at the top-right of the map; future widgets join the map's edges.
 
 ### 1.4 Window layouts
 
@@ -112,13 +129,34 @@ There are only three things to do: **change the wallpaper** → **click "Capture
 
 ### 1.5 Panel and interaction
 
-A four-section, single-column layout: **title bar** (gear / theme / help / hide to tray) →
-**wallpaper section** (group chips, hint line, arrangement map) → **layout section** (display
-filter, toggles, two buttons, window list) → **footer** (status and history, quit).
+The panel is a **four-page tab strip**: under the title bar a row of tabs (**Layout /
+Wallpaper / Notes / Config**) shows one page at a time. The active tab has no bottom edge and
+covers the rule under it, so the tab and the page read as one shape - a folder tab, not a pill
+floating above a line. The window defaults to **820×615 (4:3)** and
+its height no longer follows the data; the border can be dragged to resize freely (minimum
+560×430), and the window list and the note history fit their page to the window height, with
+the wheel paging through the rest. The footer holds only the current status and Quit; it is shared
+by every page and anchored to the bottom.
 
-Both section headers share the same structure: title + object selector + flexible space + one
+- **Layout page**: display filter, auto-restore toggle, capture / restore layout, window list.
+- **Wallpaper page**: group chips, change / apply wallpaper, hint line, arrangement map; the
+  turn handle lives inside the map at the active group's corner and the calendar switch floats at
+  its top-right, so widgets do not crowd the hint line.
+- **Notes page**: colours (edit the paper palette), new note and show-all buttons; `Note history ·
+  N` and `2 / 3` with two chevrons sit in a meta row **above** the card, at the same level as the
+  layout page's window count. The card itself has one line per row: paper dot, star (filled gold or
+  hollow, always present), close time, body preview (ellipsised to the column width), restore /
+  delete; starred rows come first; when it is empty it says so.
+- **Config page**: the settings that used to live behind title-bar icons are sorted into two
+  columns of two blocks - **Appearance** (theme and language, each three choices laid out at
+  once), **Startup** (run at logon), **Information** (open log) and **Shortcuts** (each action on
+  its own row with the combination it holds; click a row to record). The title bar also keeps two
+  quick switches: `CN` / `EN` opens the language menu and the theme button cycles light / dark /
+  follow system. Both write the same settings the config page edits; Help and Close stay at the
+  far right.
+
+All three content page headers share the same structure: title + object selector + flexible space + one
 primary button + one secondary button. The whole panel uses one button size and one row height.
-It is 820 design units wide and between 557 and 907 units tall, depending on content and screen.
 
 | Key | Action |
 |---|---|
@@ -172,12 +210,24 @@ A note that stays on top of everything except a fullscreen application.
   after a restart.
 - **At rest it is a sheet of paper with one line of text and a page-edge rule**: with the pointer
   outside and the caret elsewhere there is no bar and no buttons. When the pointer arrives or typing
-  starts, three icons (paper colour, screenshot, close) appear straight on the paper in the
-  top-right corner, with no plate behind them. Unsaved edits turn both the time and the rule
-  terracotta. Both states share the same geometry, so nothing jumps.
-- Six muted papers (warm yellow, peach, mint, misty blue, lavender, warm grey). New notes walk the
-  palette in order and the dot in the chip changes it. The colour lives in the index; switching it
-  never touches a byte of the body.
+  starts, the icons (delete / paper colour / screenshot / close / star) appear straight on the paper
+  in the top-right corner, with no plate behind them - except that **a lit star stays visible in
+  gold**, quiet but always readable. Unsaved edits turn both the time and the rule terracotta.
+  Both states share the same geometry, so nothing jumps.
+- **Five built-in muted papers** (warm yellow, peach, mint, misty blue, lavender). The notes
+  page's Colours button lists one paper per row: click a row for the system colour picker, the
+  trailing `×` drops that paper (two is the floor), "add a colour" appears below five, and "reset
+  to the five defaults" puts everything back. The same set can be written straight into
+  `note.themes=RRGGBB,...` in settings.txt (2-5 entries). New notes walk the palette in order and
+  the dot in the note's header changes this note's paper (the swatch chip has no frame; the discs
+  are drawn straight on the paper). The colour lives in the index; switching it never touches a
+  byte of the body.
+- **The star** is stored in the index, follows the note into the archive, survives a reopen, and
+  brings its history rows to the front of the panel list.
+- **Delete** (the flame icon) asks for confirmation first; a confirmed delete keeps nothing - no
+  archive row, no body file - unlike Close, which leaves a copy in the history.
+- Closing a note that was never typed into leaves nothing behind either (a starred blank note
+  excepted): opening a note and changing your mind should not print a "(blank note)" row.
 - Paper all round: the body starts below the time line and stops half a header height above the
   bottom edge, so the last line never runs into the paper's edge.
 - The body is rich text: whatever formatting arrives with a paste is kept, and pictures are stored
@@ -193,12 +243,13 @@ A note that stays on top of everything except a fullscreen application.
   the following line, so without a soft break a blank band is left behind.
 - The scrollbar is a hand-drawn 3 px thumb (RichEdit's own bar is moved outside the client area),
   accurate to the pixel; an empty note shows one line of muted placeholder text.
-- Closed notes move to the panel history: preview, paper colour and close time are shown, and a note
-  can be reopened with its body intact or forgotten for good.
-- Global hotkeys are configured in the panel's gear menu: pick "New Note" or "Region Capture",
-  press a combination, and it is saved. Defaults are `Ctrl+Alt+N` / `Ctrl+Alt+S`; a binding can be
-  cleared or reset. The capture hotkey has no note context, so its selection is saved as a PNG in
-  `Pictures\WinTools`.
+- Closed notes move to the panel history: one line per row with the star (if any), paper colour,
+  close time and preview, and a note can be reopened with its body intact or forgotten for good.
+- Global hotkeys live on the config page: New Note / Region Capture / Capture Layout /
+  Restore Layout, each row recording a combination on click. Defaults are `Ctrl+Alt+N`, +S, +L and
+  +R; a binding can be cleared or reset to defaults. Keys are named the way they are printed on
+  the keyboard (`F2`, `Num5`, `←`); only a key with no familiar name falls back to `VK<n>`.
+  The capture hotkey has no note context, so its selection is saved as a PNG in `Pictures\WinTools`.
 - The tray menu offers New Note and Show All Notes.
 
 ---
@@ -255,7 +306,7 @@ Three constraints run through the whole project:
 | Asynchronous feedback | Long tasks paint a busy frame first, then run on a worker thread and post `WM_APP+4` back to the UI thread |
 | Fault tolerance | COM failures are logged and return false rather than throwing; the log has millisecond timestamps and rotates at 1 MB |
 | Bilingual UI | The Chinese source string is the lookup key; drawing, text measurement, logging, menus and the CLI all resolve through one resource layer. Missing entries fall back to Chinese |
-| Live language switch | Picking a language refreshes immediately; buttons, chips and labels are re-measured in the new language without a restart |
+| Live language switch | Picking a language on the config page refreshes immediately; buttons, chips and labels are re-measured in the new language without a restart |
 | The widget is just a window | The calendar never owns the desktop; it re-asserts one idempotent rule - sit directly above the desktop host - every 400 ms |
 | Bodies stored untouched | Note bodies go in and out as the exact RTF bytes RichEdit produced, never reinterpreted as UTF-8, so Chinese text and pictures survive |
 
@@ -296,8 +347,9 @@ source -- WIC decode -- cover scale -- crop per display rect -- PNG slices -- ID
 - `ApplyGroups()` renders group by group, then calls `RemoveStalePieces(folder, keep)` once at
   the end. Cleanup is driven by "what was generated this round" and only recognises the slice
   filename shape.
-- The map preview calls `RenderPreview` with each group's own canvas context, using the same crop
-  geometry as the real wallpaper.
+- The map calls `RenderSurface` with each group's own canvas context - the whole turned picture,
+  uncropped - and then takes each display's window out of it with the same geometry
+  `ComputeSlice` uses, so what is drawn is what gets applied.
 
 ### 2.5 Window layout restoration
 
@@ -343,8 +395,8 @@ All runtime files live in one directory:
 │   ├── state.txt       wallpaper state from before the change
 │   └── pieces\         one slice per display; the filename carries the geometry
 └── notes\
-    ├── index.txt       note index: id, position, size and paper colour
-    ├── archive.txt     closed notes: id, position, preview and close time
+    ├── index.txt       note index: id, position, size, paper colour and star
+    ├── archive.txt     closed notes: id, position, paper colour, preview, close time and star
     ├── <id>.rtf        body
     └── <id>.deleted.rtf  retired body; reopening from history renames it back
 ```
@@ -374,13 +426,14 @@ wires up the SDK environment itself. No .NET / Windows App SDK / vcpkg.
 ```bat
 scripts\build.bat                          :: debug
 scripts\build.bat windows-x64-release      :: release
-build\debug\bin\wintools_tests.exe         :: 167 tests
+build\debug\bin\wintools_tests.exe         :: 183 tests
 ```
 
 Output lands in `build\<config>\bin\`; the release `WinTools.exe` can be copied out on its own.
-Test groups: geometry 14, placement/snap 24, layout file 8, per-display wallpaper 8, group model
-17, UI languages 7, slice cache 5, preview 3, panel 23, lunar calendar 7, canvas 7,
-sticky notes 44.
+Test groups: layout maths and monitors 20, window placement and snapping 24, layout file 8,
+groups 20, panel 17, note index 15, note placement 10, note archive 9, paper palette 9,
+note body 5, wallpaper store 8, UI languages 7, slice cache 5, preview 4, hotkeys 8,
+lunar calendar 7, canvas 7.
 
 ---
 

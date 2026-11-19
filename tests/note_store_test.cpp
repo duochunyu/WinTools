@@ -214,7 +214,8 @@ WINTOOLS_TEST(NoteStore_KeepsThePaperColour)
     store.notes.push_back(MakeRecord(L"n1", 0, 0, 360, 300));
     store.notes.push_back(MakeRecord(L"n2", 0, 0, 360, 300));
     store.notes[0].theme = 3;
-    store.notes[1].theme = 5;
+    // The last paper the palette has, far enough from the default that a lost field would show.
+    store.notes[1].theme = 4;
 
     const NoteStore parsed = ParseNoteIndex(FormatNoteIndex(store));
 
@@ -222,7 +223,7 @@ WINTOOLS_TEST(NoteStore_KeepsThePaperColour)
     if (parsed.notes.size() == 2)
     {
         CHECK_EQ(parsed.notes[0].theme, 3);
-        CHECK_EQ(parsed.notes[1].theme, 5);
+        CHECK_EQ(parsed.notes[1].theme, 4);
     }
 }
 
@@ -254,6 +255,50 @@ WINTOOLS_TEST(NoteStore_FallsBackWhenTheColourIsUnusable)
         CHECK_EQ(store.notes[0].theme, 0);
         CHECK_EQ(store.notes[1].theme, 0);
         CHECK_EQ(store.notes[2].theme, 2);
+    }
+}
+
+WINTOOLS_TEST(NoteStore_KeepsTheStar)
+{
+    NoteStore store;
+    store.notes.push_back(MakeRecord(L"n1", 0, 0, 360, 300));
+    store.notes.push_back(MakeRecord(L"n2", 0, 0, 360, 300));
+    store.notes[1].starred = true;
+
+    const NoteStore parsed = ParseNoteIndex(FormatNoteIndex(store));
+
+    CHECK_EQ(parsed.notes.size(), static_cast<std::size_t>(2));
+    if (parsed.notes.size() == 2)
+    {
+        CHECK(!parsed.notes[0].starred);
+        CHECK(parsed.notes[1].starred);
+    }
+}
+
+WINTOOLS_TEST(NoteStore_ReadsAnIndexWrittenBeforeTheStarExisted)
+{
+    // Seven fields, no star: every index the user already has looks like this. The note loads,
+    // unstarred, and nothing warns about a file that is merely older than the feature.
+    const NoteStore store = ParseNoteIndex(L"next=1\nnote\tn1\t10\t20\t360\t300\t2\n");
+
+    CHECK_EQ(store.notes.size(), static_cast<std::size_t>(1));
+    if (!store.notes.empty())
+    {
+        CHECK_EQ(store.notes[0].theme, 2);
+        CHECK(!store.notes[0].starred);
+    }
+}
+
+WINTOOLS_TEST(NoteStore_ReadsTheStarField)
+{
+    const NoteStore store = ParseNoteIndex(L"note\tn1\t0\t0\t360\t300\t0\t1\n"
+                                           L"note\tn2\t0\t0\t360\t300\t0\t0\n");
+
+    CHECK_EQ(store.notes.size(), static_cast<std::size_t>(2));
+    if (store.notes.size() == 2)
+    {
+        CHECK(store.notes[0].starred);
+        CHECK(!store.notes[1].starred);
     }
 }
 

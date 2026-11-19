@@ -37,8 +37,13 @@ inline constexpr int kNoteDefaultHeight = 300;
 /// screen is a note that cannot be grabbed anywhere.
 [[nodiscard]] Rect ClampNote(const Rect& rect, std::span<const MonitorSnapshot> monitors);
 
-/// A sensible first position: near the top-left of the primary display, stepped down and right by
-/// cascade so successive notes do not land exactly on top of each other.
-[[nodiscard]] Rect DefaultNoteRect(std::span<const MonitorSnapshot> monitors, int cascade);
+/// The display containing the virtual-desktop point, or -1 when no snapshot covers it.
+[[nodiscard]] int MonitorAtPoint(std::span<const MonitorSnapshot> monitors, int x, int y);
+
+/// A sensible first position: near the top-left of `preferredMonitor` (the primary when it is -1
+/// or out of range), stepped down and right by cascade so successive notes do not land exactly on
+/// top of each other.
+[[nodiscard]] Rect DefaultNoteRect(std::span<const MonitorSnapshot> monitors, int cascade,
+    int preferredMonitor = -1);
 
 } // namespace wintools::core

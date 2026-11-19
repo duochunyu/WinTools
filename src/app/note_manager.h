@@ -61,6 +61,19 @@ public:
     /// Re-clamps every note after the display arrangement changed.
     void SyncMonitors(std::span<const core::MonitorSnapshot> monitors);
 
+    /// Re-reads the paper palette after the panel edited it. `removed` is the palette index that
+    /// went away, or -1 when the palette only changed colour: notes on and after a removed paper
+    /// shift down one slot, so a note keeps the paper it was wearing instead of the index it had.
+    void ApplyPalette(int removed = -1);
+
+    /// The note the user is currently in: the open note that owns the foreground window.
+    ///
+    /// Null when the focus is somewhere else, which is what the capture hotkey uses to decide
+    /// between inserting into a note and saving a file. Deliberately not "the last note that had
+    /// the focus": a screenshot taken while working in another application belongs in a file, not
+    /// in a note the user left half an hour ago.
+    [[nodiscard]] Note* NoteInForeground();
+
     /// Saves every note body. Called on quit.
     void SaveAll();
 
@@ -73,6 +86,8 @@ private:
     void Persist();
     void OnMoved(Note& note);
     void OnThemeChanged(Note& note);
+    void OnDeleted(Note& note);
+    void OnStarChanged(Note& note);
     void OnClosed(Note& note);
 
     HINSTANCE m_instance{};
