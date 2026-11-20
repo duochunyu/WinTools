@@ -31,9 +31,10 @@ public:
     NoteManager(NoteManager&&) = delete;
     NoteManager& operator=(NoteManager&&) = delete;
 
-    /// Re-creates the notes from the index. Notes whose window cannot be created are dropped from
-    /// memory but left on disk, so a transient failure does not destroy the user's text.
-    void Start(HINSTANCE instance);
+    /// Reads the index, then re-creates its notes when `restore` is true. With it false the text
+    /// stays on disk and no window opens; ShowAll materialises them later. Notes whose window
+    /// cannot be created are dropped from memory but left on disk either way.
+    void Start(HINSTANCE instance, bool restore);
 
     /// Opens one more note, stacked slightly away from the previous one.
     void NewNote();
@@ -83,6 +84,10 @@ public:
     }
 
 private:
+    /// Creates a window for every indexed note that does not have one yet. Called at startup when
+    /// restore is on, and lazily by ShowAll when it is off.
+    void RestoreWindows();
+
     void Persist();
     void OnMoved(Note& note);
     void OnThemeChanged(Note& note);
@@ -94,6 +99,7 @@ private:
     core::NoteStore m_store;
     core::NoteArchive m_archive;
     std::vector<std::unique_ptr<Note>> m_notes;
+    bool m_restored{};
 };
 
 } // namespace wintools::app

@@ -55,6 +55,8 @@ enum class PanelAction
     ApplyLayout,
     ToggleAutoLayout,
     ToggleAutostart,
+    /// Whether sticky notes are recreated at the next startup. Takes effect on restart.
+    ToggleNoteRestore,
 
     /// Tick or untick one remembered window. index is its row, value is the wanted state.
     ToggleWindow,
@@ -189,6 +191,7 @@ struct PanelState
 
     bool autoLayout{ true };
     bool autostart{};
+    bool noteRestore{ true };
     bool darkTheme{};
 
     /// settings.txt's own values, not the resolved result: 0 light / 1 dark / 2 follow the system,
@@ -438,6 +441,7 @@ private:
         ConfigTheme,
         ConfigLanguage,
         ConfigAutostart,
+        ConfigNoteRestore,
         ConfigHotkey,
         ConfigResetHotkeys,
         ConfigOpenLog,

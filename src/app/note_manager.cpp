@@ -63,18 +63,37 @@ NoteManager::~NoteManager()
     }
 }
 
-void NoteManager::Start(HINSTANCE instance)
+void NoteManager::Start(HINSTANCE instance, bool restore)
 {
     m_instance = instance;
     m_store = core::NoteStore::Load();
     m_archive = core::NoteArchive::Load();
 
-    const std::vector<core::MonitorSnapshot> monitors = core::CaptureMonitors();
+    util::LogInfo(L"sticky notes: {} note(s) in the index (restore on start: {})",
+        m_store.notes.size(), restore ? 1 : 0);
 
-    util::LogInfo(L"sticky notes: {} note(s) in the index", m_store.notes.size());
+    if (restore)
+    {
+        RestoreWindows();
+    }
+}
+
+void NoteManager::RestoreWindows()
+{
+    const std::vector<core::MonitorSnapshot> monitors = core::CaptureMonitors();
 
     for (const core::NoteRecord& record : m_store.notes)
     {
+        // A note created while restore was off already has a window; ShowAll must not open a
+        // second copy of it when it materialises the ones that were left on disk.
+        const bool present = std::any_of(m_notes.begin(), m_notes.end(),
+            [&record](const std::unique_ptr<Note>& note)
+            { return note != nullptr && note->Id() == record.id; });
+        if (present)
+        {
+            continue;
+        }
+
         auto note = std::make_unique<Note>();
         const core::Rect rect = core::ClampNote(record.rect, monitors);
 
@@ -95,6 +114,8 @@ void NoteManager::Start(HINSTANCE instance)
         note->LoadBody();
         m_notes.push_back(std::move(note));
     }
+
+    m_restored = true;
 }
 
 void NoteManager::NewNote()
@@ -139,6 +160,13 @@ void NoteManager::NewNote()
 
 void NoteManager::ShowAll()
 {
+    // With restart restore off the index was read but no window exists yet. "Show all" is the
+    // explicit way back, so it materialises them on first use instead of doing nothing.
+    if (!m_restored)
+    {
+        RestoreWindows();
+    }
+
     for (const auto& note : m_notes)
     {
         if (note != nullptr)

@@ -29,6 +29,11 @@ struct Settings
     /// Re-place windows after displays come back.
     bool autoRestoreLayout{ true };
 
+    /// Re-create the sticky notes that were on screen before the last exit. Off keeps their index
+    /// and text on disk but opens no note windows at startup; the tray / panel "show all" still
+    /// brings them back, so this is a startup convenience, not a delete switch.
+    bool restoreNotes{ true };
+
     bool startWithWindows{};
 
     /// When the layout was last put back automatically, as "11-07 16:31"; empty when it never was.

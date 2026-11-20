@@ -11,6 +11,7 @@
 
 #include "app/actions.h"
 #include "app/capture.h"
+#include "app/features.h"
 #include "app/startup.h"
 #include "core/desktop_wallpaper.h"
 #include "core/layout_math.h"
@@ -262,11 +263,12 @@ bool Service::Start(bool showPanel)
 
     m_tray.Add(m_window, m_icon, L"WinTools", kTrayMessage);
 
-    // Notes are restored before anything else can cover the screen: they are the one part of the
-    // app that is expected to be exactly where it was left.
-    m_notes.Start(m_instance);
+    // Notes are restored before anything else can cover the screen - when the user asked for that.
+    // With restart restore off the index is still read, but no window is created until the tray
+    // or the notes page asks for them.
+    m_notes.Start(m_instance, m_settings.restoreNotes);
 
-    if (m_settings.canvasEnabled)
+    if (kDesktopWidgetsEnabled && m_settings.canvasEnabled)
     {
         (void)StartCanvas();
     }
@@ -505,8 +507,11 @@ void Service::ShowTrayMenu()
     ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     ::AppendMenuW(menu, MF_STRING, kMenuWallpaper, util::i18n::Cstr(L"更换壁纸"));
     ::AppendMenuW(menu, MF_STRING, kMenuRestoreWallpaper, util::i18n::Cstr(L"还原壁纸"));
-    ::AppendMenuW(menu, MF_STRING | (m_settings.canvasEnabled ? MF_CHECKED : 0), kMenuCanvas,
-        util::i18n::Cstr(L"桌面日历"));
+    if constexpr (kDesktopWidgetsEnabled)
+    {
+        ::AppendMenuW(menu, MF_STRING | (m_settings.canvasEnabled ? MF_CHECKED : 0), kMenuCanvas,
+            util::i18n::Cstr(L"桌面日历"));
+    }
     ::AppendMenuW(menu, MF_STRING, kMenuNewNote, util::i18n::Cstr(L"新建便签"));
     ::AppendMenuW(menu, MF_STRING, kMenuShowNotes, util::i18n::Cstr(L"显示所有便签"));
 
@@ -860,6 +865,13 @@ void Service::HandleAction(const PanelRequest& request)
             return;
         }
 
+        case PanelAction::ToggleNoteRestore:
+            m_settings.restoreNotes = !m_settings.restoreNotes;
+            (void)m_settings.Save();
+            SetStatus(m_settings.restoreNotes ? L"便签重启恢复已开，下次重启生效"
+                                              : L"便签重启恢复已关，下次重启生效");
+            return;
+
         case PanelAction::ToggleWindow:
         {
             const ActionResult result = SetWindowRemembered(request.index, request.value != 0);
@@ -1007,45 +1019,55 @@ void Service::HandleAction(const PanelRequest& request)
 
         case PanelAction::ToggleCanvas:
         {
-            if (m_settings.canvasEnabled)
+            // The widget is shelved; a stale panel or an old settings file must not bring it back.
+            // The message has no sender any more, but keeping the case costs nothing and the body
+            // stays ready for the day the feature returns.
+            if constexpr (kDesktopWidgetsEnabled)
             {
-                m_settings.canvasEnabled = false;
-                m_canvas.Stop();
+                if (m_settings.canvasEnabled)
+                {
+                    m_settings.canvasEnabled = false;
+                    m_canvas.Stop();
+                    (void)m_settings.Save();
+                    SetStatus(L"桌面日历已隐藏");
+                    return;
+                }
+
+                // A settings file written before the widget existed carries no position; the
+                // default lands it on the display the cursor is on rather than in the top-left
+                // corner.
+                if (m_settings.canvas.x == 0 && m_settings.canvas.y == 0)
+                {
+                    m_settings.canvas = DefaultCanvasRect();
+                }
+
+                m_settings.canvasEnabled = true;
                 (void)m_settings.Save();
-                SetStatus(L"桌面日历已隐藏");
-                return;
+
+                SetStatus(StartCanvas() ? L"桌面日历已显示" : L"桌面日历启动失败，详见日志",
+                    !m_canvas.Running());
             }
-
-            // A settings file written before the widget existed carries no position; the default
-            // lands it on the display the cursor is on rather than in the top-left corner.
-            if (m_settings.canvas.x == 0 && m_settings.canvas.y == 0)
-            {
-                m_settings.canvas = DefaultCanvasRect();
-            }
-
-            m_settings.canvasEnabled = true;
-            (void)m_settings.Save();
-
-            SetStatus(StartCanvas() ? L"桌面日历已显示" : L"桌面日历启动失败，详见日志",
-                !m_canvas.Running());
             return;
         }
 
         case PanelAction::MoveCanvas:
         {
-            const core::CanvasRect moved = core::ClampCanvas(
-                core::CanvasRect{ request.x, request.y, m_settings.canvas.size },
-                core::CaptureMonitors());
-
-            if (moved == m_settings.canvas)
+            if constexpr (kDesktopWidgetsEnabled)
             {
-                return;
-            }
+                const core::CanvasRect moved = core::ClampCanvas(
+                    core::CanvasRect{ request.x, request.y, m_settings.canvas.size },
+                    core::CaptureMonitors());
 
-            m_settings.canvas = moved;
-            (void)m_settings.Save();
-            m_canvas.SetRect(moved);
-            m_panel.Refresh();
+                if (moved == m_settings.canvas)
+                {
+                    return;
+                }
+
+                m_settings.canvas = moved;
+                (void)m_settings.Save();
+                m_canvas.SetRect(moved);
+                m_panel.Refresh();
+            }
             return;
         }
 
@@ -1321,6 +1343,7 @@ PanelState Service::ReadState()
 
     state.autoLayout = m_settings.autoRestoreLayout;
     state.autostart = IsAutostartEnabled();
+    state.noteRestore = m_settings.restoreNotes;
     state.darkTheme = DarkTheme();
     // The settings as written, alongside the theme the window actually resolved to: the config
     // page offers "follow the system" as a choice, so it needs the choice, not its outcome.

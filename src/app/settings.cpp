@@ -4,6 +4,7 @@
 #include <fstream>
 #include <system_error>
 
+#include "app/features.h"
 #include "util/log.h"
 #include "util/path.h"
 #include "util/text.h"
@@ -19,6 +20,7 @@ constexpr wchar_t kKeyZoom[] = L"wallpaper.zoom=";
 constexpr wchar_t kKeyFocusX[] = L"wallpaper.focusX=";
 constexpr wchar_t kKeyFocusY[] = L"wallpaper.focusY=";
 constexpr wchar_t kKeyAutoRestore[] = L"layout.autoRestore=";
+constexpr wchar_t kKeyNoteRestore[] = L"note.restore=";
 constexpr wchar_t kKeyStartWithWindows[] = L"startWithWindows=";
 constexpr wchar_t kKeyDebounce[] = L"layout.debounceSeconds=";
 constexpr wchar_t kKeyLastAutoRestore[] = L"layout.lastAutoRestore=";
@@ -145,6 +147,10 @@ Settings Settings::Load()
         {
             settings.autoRestoreLayout = ToBool(value);
         }
+        else if (key == kKeyNoteRestore)
+        {
+            settings.restoreNotes = ToBool(value);
+        }
         else if (key == kKeyStartWithWindows)
         {
             settings.startWithWindows = ToBool(value);
@@ -260,6 +266,15 @@ Settings Settings::Load()
     // A hand-edited file can put anything in the three framing fields; the renderer refuses
     // nonsense but the panel draws with these values directly, so they are made sane once here.
     settings.wallpaperView = core::ClampView(settings.wallpaperView);
+
+    // Desktop widgets are shelved for this release. Clearing the flag here rather than only at the
+    // call sites means a file written by an earlier build cannot quietly raise the calendar on the
+    // next start, and the next save records "off".
+    if constexpr (!kDesktopWidgetsEnabled)
+    {
+        settings.canvasEnabled = false;
+    }
+
     return settings;
 }
 
@@ -287,6 +302,7 @@ bool Settings::Save() const
     text += std::format(L"{}{:.4f}\n", kKeyFocusX, wallpaperView.focusX);
     text += std::format(L"{}{:.4f}\n", kKeyFocusY, wallpaperView.focusY);
     text += std::format(L"{}{}\n", kKeyAutoRestore, autoRestoreLayout ? 1 : 0);
+    text += std::format(L"{}{}\n", kKeyNoteRestore, restoreNotes ? 1 : 0);
     text += std::format(L"{}{}\n", kKeyStartWithWindows, startWithWindows ? 1 : 0);
     text += std::format(L"{}{}\n", kKeyDebounce, debounceSeconds);
     text += std::format(L"{}{}\n", kKeyLastAutoRestore, lastAutoRestore);

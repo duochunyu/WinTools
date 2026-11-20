@@ -21,6 +21,8 @@
 #include "util/i18n.h"
 #include "util/log.h"
 
+#include "app/features.h"
+
 #ifndef DWMWA_WINDOW_CORNER_PREFERENCE
 #define DWMWA_WINDOW_CORNER_PREFERENCE 33
 #endif
@@ -117,11 +119,11 @@ constexpr int kWallFloatInset = 10;
 constexpr int kArcMargin = 40;
 
 /// The notes page: the head row's gap into the history card, and the card's own furniture.
-constexpr int kNotesHeadGap = 7;
-constexpr int kNotesCardGapTop = 10;
+constexpr int kNotesHeadGap = 2;
+constexpr int kNotesCardGapTop = 3;
 constexpr int kNotesHeadHeight = 22;
 /// The list's meta row: same small type as the layout page's "N 个窗口" line above its list.
-constexpr int kArchiveMetaHeight = 22;
+constexpr int kArchiveMetaHeight = 18;
 constexpr int kNotesCardPadBottom = 8;
 
 /// Closed notes shown per screenful in the panel. The card holds as many rows as the window
@@ -1758,9 +1760,14 @@ void Panel::PlaceRotateArc(Geometry& g) const
     RECT box{ INT_MAX, INT_MAX, INT_MIN, INT_MIN };
     std::vector<RECT> others;
     // The calendar chip is a control, not a display, but a handle drawn over it would be just as
-    // unusable - so it joins the obstacles with a small breathing gap.
-    others.push_back(RECT{ g.canvasSwitch.left - 4, g.canvasSwitch.top - 4,
-        g.canvasSwitch.right + 4, g.canvasSwitch.bottom + 4 });
+    // unusable - so it joins the obstacles with a small breathing gap. Only when the widget is
+    // actually on the page: a zeroed rect near the top-left corner would push the handle away from
+    // a control that is not there.
+    if constexpr (kDesktopWidgetsEnabled)
+    {
+        others.push_back(RECT{ g.canvasSwitch.left - 4, g.canvasSwitch.top - 4,
+            g.canvasSwitch.right + 4, g.canvasSwitch.bottom + 4 });
+    }
     for (size_t index = 0; index < m_state.monitors.size(); ++index)
     {
         const RECT screen = projection.ToClient(m_state.monitors[index].rect);
@@ -2104,10 +2111,19 @@ Panel::Geometry Panel::ComputeGeometry() const
                 g.mapCard.bottom - 12 - kArcMargin };
 
             // The calendar chip is an obstacle too, not just other displays: the handle must not
-            // land on top of a control. Placed before the arc so the arc can avoid it.
-            const int floatRight = g.mapCard.right - kWallFloatInset;
-            g.canvasSwitch = { floatRight - 68, g.mapCard.top + 10,
-                floatRight, std::min(g.mapCard.bottom - 8, g.mapCard.top + 10 + 46) };
+            // land on top of a control. Placed before the arc so the arc can avoid it. Shelved
+            // widgets leave the rect empty, and nothing is reserved for them.
+            if constexpr (kDesktopWidgetsEnabled)
+            {
+                const int floatRight = g.mapCard.right - kWallFloatInset;
+                g.canvasSwitch = { floatRight - 68, g.mapCard.top + 10,
+                    floatRight, std::min(g.mapCard.bottom - 8, g.mapCard.top + 10 + 46) };
+            }
+            else
+            {
+                // Geometry is default-initialised, so an unset RECT is garbage, not zero.
+                g.canvasSwitch = RECT{};
+            }
 
             // The arc handle belongs to the selected group, not to the page: it sits just outside
             // one corner of that group's box in the map, on the side where no other display is
@@ -2326,6 +2342,7 @@ Panel::Geometry Panel::ComputeGeometry() const
             // --- Startup ---
             heading(L"启动");
             toggle(L"开机启动", Hot::ConfigAutostart, m_state.autostart);
+            toggle(L"重启恢复便签", Hot::ConfigNoteRestore, m_state.noteRestore);
 
             // --- Information ---
             heading(L"信息");
@@ -2617,9 +2634,12 @@ Panel::Target Panel::HitTest(POINT point) const
         return { Hot::Quit, -1 };
     }
 
-    if (Contains(g.canvasSwitch, point))
+    if constexpr (kDesktopWidgetsEnabled)
     {
-        return { Hot::CanvasSwitch, -1 };
+        if (Contains(g.canvasSwitch, point))
+        {
+            return { Hot::CanvasSwitch, -1 };
+        }
     }
 
     // The number badge is the only route into the group menu, and it sits on top of the map.
@@ -2640,7 +2660,7 @@ Panel::Target Panel::HitTest(POINT point) const
 
         // The calendar is drawn over the pictures, so it is hit-tested over them too - but before
         // the map body, which is the wallpaper drag.
-        if (m_state.canvasOn)
+        if (kDesktopWidgetsEnabled && m_state.canvasOn)
         {
             const RECT box = CanvasRectOnMap(LayoutMap(g));
             if (Contains(box, point))
@@ -3117,21 +3137,28 @@ void Panel::PaintTitleBar(HDC dc, const Geometry& geometry)
 
     FillBox(dc, RECT{ 0, kTitleBarHeight - 1, m_clientW, kTitleBarHeight }, t.line);
 
-    const auto icon = [&](const RECT& rect, const wchar_t* glyph, Hot hot, bool danger) {
+    // The four glyphs come from two fonts, and `DT_VCENTER` centres their line boxes, not the ink
+    // the eye actually sees: at 120 dpi the measured ink centres were CN 21.5, circle/? 23 and
+    // close 24 device pixels. A one-unit optical nudge on the two outliers puts all four on the
+    // same line without moving the hit rectangles.
+    const auto icon = [&](const RECT& rect, const wchar_t* glyph, Hot hot, bool danger, int nudge) {
         const bool hovered = m_hot == hot;
         if (hovered)
         {
             FillRounded(dc, rect, 6, danger ? t.dangerWeak : t.hover);
         }
 
+        RECT text = rect;
+        text.top += nudge;
+        text.bottom += nudge;
         DrawTextBlock(dc, m_fontIcon,
-            danger ? (hovered ? t.danger : t.text3) : (hovered ? t.text : t.text3), rect, glyph,
+            danger ? (hovered ? t.danger : t.text3) : (hovered ? t.text : t.text3), text, glyph,
             DT_CENTER);
     };
 
-    icon(geometry.iconTheme, L"\u25D0", Hot::IconTheme, false);
-    icon(geometry.iconHelp, L"?", Hot::IconHelp, false);
-    icon(geometry.iconClose, L"\u00D7", Hot::IconClose, true);
+    icon(geometry.iconTheme, L"\u25D0", Hot::IconTheme, false, 0);
+    icon(geometry.iconHelp, L"?", Hot::IconHelp, false, 0);
+    icon(geometry.iconClose, L"\u00D7", Hot::IconClose, true, -1);
 
     // The language button shows the effective language (CN / EN), not the mode: "follow system"
     // resolves to one of the two, and a short fixed-width caption never pushes the icons around.
@@ -3142,8 +3169,11 @@ void Panel::PaintTitleBar(HDC dc, const Geometry& geometry)
         {
             FillRounded(dc, geometry.iconLanguage, 6, pressed ? t.hover2 : t.hover);
         }
+        RECT text = geometry.iconLanguage;
+        text.top += 1;
+        text.bottom += 1;
         DrawTextBlock(dc, m_fontSmall, (hovered || pressed) ? t.text : t.text2,
-            geometry.iconLanguage, util::i18n::LanguageShortLabel(), DT_CENTER | DT_VCENTER);
+            text, util::i18n::LanguageShortLabel(), DT_CENTER | DT_VCENTER);
     }
 }
 
@@ -3421,22 +3451,25 @@ void Panel::PaintWallpaperBlock(HDC dc, const Geometry& geometry)
         // Desktop calendar switch. Same track and knob as 自动恢复, so there is one switch in
         // the product rather than one per feature - just standing upright here, label under
         // track, inside a small card of its own so it stays readable over any wallpaper.
-        const RECT& rect = geometry.canvasSwitch;
-        const int trackWidth = 30;
-        const int trackHeight = 17;
-        const int centreX = (rect.left + rect.right) / 2;
-        const int blockTop = rect.top + 4;
-        const RECT track{ centreX - trackWidth / 2, blockTop, centreX + trackWidth / 2,
-            blockTop + trackHeight };
+        if constexpr (kDesktopWidgetsEnabled)
+        {
+            const RECT& rect = geometry.canvasSwitch;
+            const int trackWidth = 30;
+            const int trackHeight = 17;
+            const int centreX = (rect.left + rect.right) / 2;
+            const int blockTop = rect.top + 4;
+            const RECT track{ centreX - trackWidth / 2, blockTop, centreX + trackWidth / 2,
+                blockTop + trackHeight };
 
-        FillRounded(dc, track, trackHeight / 2, m_state.canvasOn ? t.accent : t.line2);
+            FillRounded(dc, track, trackHeight / 2, m_state.canvasOn ? t.accent : t.line2);
 
-        const int knobX = m_state.canvasOn ? track.right - 2 - 13 : track.left + 2;
-        FillRounded(dc, RECT{ knobX, track.top + 2, knobX + 13, track.top + 15 }, 7,
-            RGB(255, 255, 255));
+            const int knobX = m_state.canvasOn ? track.right - 2 - 13 : track.left + 2;
+            FillRounded(dc, RECT{ knobX, track.top + 2, knobX + 13, track.top + 15 }, 7,
+                RGB(255, 255, 255));
 
-        DrawTextBlock(dc, m_fontBody, m_hot == Hot::CanvasSwitch ? t.accent : t.text2,
-            RECT{ rect.left, track.bottom + 2, rect.right, rect.bottom }, L"日历", DT_CENTER);
+            DrawTextBlock(dc, m_fontBody, m_hot == Hot::CanvasSwitch ? t.accent : t.text2,
+                RECT{ rect.left, track.bottom + 2, rect.right, rect.bottom }, L"日历", DT_CENTER);
+        }
     }
 }
 
@@ -4044,8 +4077,9 @@ void Panel::PaintMap(HDC dc, const Geometry& geometry)
     }
 
     // The desktop calendar, over the pictures but under the screen numbers: the numbers are the
-    // map's click targets and a widget that hid one would make a screen unreachable.
-    if (m_state.canvasOn)
+    // map's click targets and a widget that hid one would make a screen unreachable. Compiled out
+    // while the widget is shelved, together with the switch that would raise it.
+    if (kDesktopWidgetsEnabled && m_state.canvasOn)
     {
         const RECT box = CanvasRectOnMap(map);
         if (box.right > box.left && box.bottom > box.top)
@@ -5233,7 +5267,10 @@ std::vector<Panel::Target> Panel::FocusRing(const Geometry& geometry) const
                 ring.push_back({ Hot::ResetRotation, -1 });
             }
 
-            ring.push_back({ Hot::CanvasSwitch, -1 });
+            if constexpr (kDesktopWidgetsEnabled)
+            {
+                ring.push_back({ Hot::CanvasSwitch, -1 });
+            }
 
             for (int index = 0; index < static_cast<int>(m_state.monitors.size()); ++index)
             {
@@ -5311,6 +5348,7 @@ RECT Panel::RectForTarget(const Geometry& geometry, const Target& target) const
         case Hot::ConfigTheme:
         case Hot::ConfigLanguage:
         case Hot::ConfigAutostart:
+        case Hot::ConfigNoteRestore:
         case Hot::ConfigHotkey:
         case Hot::ConfigResetHotkeys:
         case Hot::ConfigOpenLog:
@@ -5715,6 +5753,10 @@ void Panel::Activate(const Target& target)
             emit(PanelAction::ToggleAutostart);
             return;
 
+        case Hot::ConfigNoteRestore:
+            emit(PanelAction::ToggleNoteRestore);
+            return;
+
         case Hot::ConfigOpenLog:
             emit(PanelAction::OpenLog);
             return;
@@ -5935,8 +5977,15 @@ void Panel::Activate(const Target& target)
 
         case Hot::PopupItem:
         case Hot::ModalButton:
+            // Both are consumed by their own press/release handlers above; reaching here means a
+            // row slipped through, and toggling a widget is certainly not the right fallback.
+            return;
+
         case Hot::CanvasSwitch:
-            emit(PanelAction::ToggleCanvas);
+            if constexpr (kDesktopWidgetsEnabled)
+            {
+                emit(PanelAction::ToggleCanvas);
+            }
             return;
 
         case Hot::MapBody:
@@ -6672,7 +6721,7 @@ LRESULT Panel::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam)
             }
 
             // Dragging the calendar moves it; dragging a screen moves that screen's picture.
-            if (target.hot == Hot::CanvasBody)
+            if (kDesktopWidgetsEnabled && target.hot == Hot::CanvasBody)
             {
                 m_draggingCanvas = true;
                 m_canvasGrab = point;
@@ -6987,7 +7036,10 @@ LRESULT Panel::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam)
             switch (target.hot)
             {
                 case Hot::CanvasBody:
-                    ::SetCursor(::LoadCursorW(nullptr, IDC_SIZEALL));
+                    if constexpr (kDesktopWidgetsEnabled)
+                    {
+                        ::SetCursor(::LoadCursorW(nullptr, IDC_SIZEALL));
+                    }
                     return TRUE;
 
                 case Hot::MapBody:
