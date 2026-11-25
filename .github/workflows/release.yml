@@ -208,8 +208,13 @@ jobs:
             'notes.zh=修复问题并改进稳定性，详情见 Release 页面。'
             'notes.en=Bug fixes and stability improvements; see the release page for details.'
           )
+          # WriteAllText with an explicit "\n", not WriteAllLines: the latter uses
+          # Environment.NewLine, which is CRLF on Windows, so the copy attached to the release and
+          # the copy committed to git ended up different files (438 vs 430 bytes). The parser
+          # tolerates both, but one feed should be one file.
           $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-          [System.IO.File]::WriteAllLines((Join-Path $env:RUNNER_TEMP 'update.txt'), $lines, $utf8NoBom)
+          [System.IO.File]::WriteAllText((Join-Path $env:RUNNER_TEMP 'update.txt'),
+            ($lines -join "`n") + "`n", $utf8NoBom)
           Copy-Item (Join-Path $env:RUNNER_TEMP 'update.txt') 'update.txt' -Force
 
       # The download warning is the one thing users actually hit, so the notes say plainly whether
@@ -269,7 +274,7 @@ jobs:
           $body.Add('```')
 
           $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-          [System.IO.File]::WriteAllLines('release-notes.md', $body, $utf8NoBom)
+          [System.IO.File]::WriteAllText('release-notes.md', ($body -join "`n") + "`n", $utf8NoBom)
 
       - name: Release on GitHub
         uses: softprops/action-gh-release@v2
