@@ -171,7 +171,9 @@ def update_feed(tag, version, size, digest):
     if base64.b64decode(body["content"]).decode("utf-8", "replace") == feed:
         print("镜像仓 update.txt 已是最新，未改动")
         return
-    payload = json.dumps({
+    # Form-encoded, not JSON: Gitee's contents API reads these four as form fields, and a JSON
+    # body comes back as "content is missing, sha is missing, message is missing".
+    payload = urllib.parse.urlencode({
         "content": base64.b64encode(feed.encode("utf-8")).decode("ascii"),
         "sha": body["sha"],
         "message": "chore: publish update.txt for " + tag,
