@@ -1,14 +1,23 @@
 # Code signing policy
 
-WinTools releases are Authenticode-signed. This page describes who signs them, what is guaranteed,
-and how to check a download. SignPath Foundation asks applicants to publish such a policy, so it is
-kept in the repository rather than in a wiki.
+This page describes how WinTools releases are signed, who may approve a signature, and how to check
+a download. SignPath Foundation asks applicants to publish such a policy, so it is kept in the
+repository rather than in a wiki.
+
+## Current status
+
+The signing pipeline is in place and the certificate is not: as of **v0.3.0 (2026-11-25)** releases
+are published **unsigned**, and the release notes say so plainly instead of implying otherwise. The
+application for a SignPath Foundation certificate is pending. Everything below describes the state
+the project moves to once that certificate exists; the verification steps it promises are already
+enforced by the release workflow, which aborts the build rather than publish a binary that fails
+them.
 
 ## What is signed
 
-Every published `WinTools.exe` is signed with a code signing certificate issued to **SignPath
-Foundation** and timestamped through an RFC 3161 timestamp authority. The certificate's private key
-lives in SignPath's HSM; this project never holds it and never sees it.
+A signed `WinTools.exe` carries an Authenticode signature from a code signing certificate issued to
+**SignPath Foundation**, accompanied by an RFC 3161 timestamp. The certificate's private key lives in
+SignPath's HSM; this project never holds it and never sees it.
 
 The publisher name shown by Windows is therefore `SignPath Foundation`, not an individual. That is
 the intended arrangement for free open-source signing and is not a sign of an impersonated build.
@@ -56,14 +65,20 @@ Get-FileHash .\WinTools.exe -Algorithm SHA256     # compare with the release not
 Get-AuthenticodeSignature .\WinTools.exe | Format-List Status, StatusMessage, SignerCertificate
 ```
 
-`Status` should be `Valid` and the signer should be `SignPath Foundation`.
+For a signed release `Status` reads `Valid` and the signer is `SignPath Foundation`. **While the
+certificate is pending, releases are unsigned and `Status` reads `NotSigned`** - that is expected
+today, not a sign of tampering, and the release notes state it on every download. In that state the
+SHA-256 is the only check available, so compare it.
 
-A signed binary still has to earn SmartScreen reputation, and a first release under a new signing
-identity may warn once. The warning names the publisher in that case; it does not say "unknown
-publisher". A build that says "unknown publisher" is not one of ours.
+A signed binary still has to earn SmartScreen reputation, and the first release under a new signing
+identity may warn once. That warning names the publisher; it does not say "unknown publisher".
+
+Until signing is active, read that sentence the other way round: a download that reports "unknown
+publisher" may well be ours, because none of them are signed yet. Verify the SHA-256.
 
 ## Privacy
 
 WinTools collects nothing. It contains no telemetry, analytics or crash reporting. The only network
 access the application can make is the update check, which is **off by default** and can be turned
-off again at any time in the settings panel.
+off again at any time in the settings panel. See [PRIVACY.md](PRIVACY.md) for exactly what is stored
+on disk and what the update request sends.
