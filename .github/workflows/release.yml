@@ -1,19 +1,26 @@
 name: Release
 
 # Auto-publish a GitHub Release and a Gitee Release whenever a tag like v1.2.3 is pushed.
-# The build runs once on windows-latest, the SHA-256 is computed once, and both mirrors publish
-# those exact bytes. The update feed is written to both main branches for the in-app updater.
+# The build runs once on windows-latest, the binary is signed once, the SHA-256 is computed once,
+# and both mirrors publish those exact bytes. The update feed is written to both main branches for
+# the in-app updater.
 #
-# Prerequisites: a Gitee repository `YingKeWangLuo_admin/main` and a repository secret GITEE_TOKEN with
-# only the `projects` scope. The token is never written to a file or passed to an upload as text.
+# Prerequisites: a Gitee repository `YingKeWangLuo_admin/main` and a repository secret GITEE_TOKEN
+# with only the `projects` scope. The token is never written to a file or passed to an upload as
+# text. Code signing is optional - see CODE_SIGNING_POLICY.md - and is switched on by defining the
+# repository variable SIGNPATH_PROJECT_SLUG.
 
 on:
   push:
     tags:
       - 'v*'
 
+# Declaring any permission sets every unlisted one to none. actions: read is required by the
+# SignPath action, which pulls the staged artifact through the GitHub API with GITHUB_TOKEN;
+# without it the first signed release would fail with a 403 while the unsigned path kept working.
 permissions:
   contents: write
+  actions: read
 
 jobs:
   build-and-release:
@@ -41,6 +48,138 @@ jobs:
         shell: cmd
         run: scripts\build.bat windows-x64-release
 
+      # The Gitee mirror is part of the design but not a hard requirement: a release that publishes
+      # to GitHub still works, because the updater falls back to the GitHub URLs in the feed. So an
+      # absent token means "mirror not configured" and skips the Gitee steps; a token that is
+      # present but rejected is a real failure and is not swallowed.
+      - name: Detect Gitee configuration
+        id: giteecfg
+        shell: pwsh
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          if ($env:GITEE_TOKEN) {
+            'configured=true' | Out-File -Append $env:GITHUB_OUTPUT
+            'Gitee mirror enabled' | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          } else {
+            'configured=false' | Out-File -Append $env:GITHUB_OUTPUT
+            'GITEE_TOKEN is unset - Gitee steps will be SKIPPED' | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          }
+
+      # Signing is optional so a fork without SignPath credentials can still cut a release. The
+      # switch is SIGNPATH_PROJECT_SLUG: unset means "publish the unsigned build and say so in the
+      # notes"; set means signing is mandatory, and from there on every failure aborts the run
+      # rather than quietly shipping an unsigned exe under a release that claims to be signed.
+      - name: Detect signing configuration
+        id: signcfg
+        shell: pwsh
+        env:
+          SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+        run: |
+          if ($env:SLUG) {
+            'configured=true' | Out-File -Append $env:GITHUB_OUTPUT
+            "signing enabled for project '$env:SLUG'" | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          } else {
+            'configured=false' | Out-File -Append $env:GITHUB_OUTPUT
+            'SIGNPATH_PROJECT_SLUG is unset - publishing an UNSIGNED build' | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          }
+
+      - name: Stage unsigned artifact
+        id: stage
+        if: steps.signcfg.outputs.configured == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned
+          path: build/release/bin/WinTools.exe
+          if-no-files-found: error
+          retention-days: 1
+
+      # SignPath hands back a downloadable artifact rather than signing in place, so the signed
+      # bytes are pulled back and copied over the build output below. Everything downstream - the
+      # hash, the feed, both releases - then sees exactly the bytes that will ship.
+      #
+      # The artifact configuration is what tells SignPath that the upload is a zip holding one PE
+      # file named WinTools.exe. Leave SIGNPATH_ARTIFACT_CONFIGURATION_SLUG unset only when the
+      # project defines a single configuration.
+      - name: Sign binary
+        id: sign
+        if: steps.signcfg.outputs.configured == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.stage.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed
+
+      # Signing rewrites the PE header. Nothing about the result is assumed: the signature, its
+      # timestamp and the embedded version are all checked, because a signing pipeline that
+      # "succeeds" while producing an unsigned or stale binary is worse than no signing at all.
+      - name: Install and verify signed binary
+        if: steps.signcfg.outputs.configured == 'true'
+        shell: pwsh
+        env:
+          PUBLISHER: ${{ vars.SIGNPATH_PUBLISHER }}
+        run: |
+          $file = 'build/release/bin/WinTools.exe'
+
+          $signed = Get-ChildItem -Path 'signed' -Recurse -File -Filter 'WinTools.exe' |
+            Select-Object -First 1
+          if (-not $signed) { throw 'the signed artifact does not contain WinTools.exe' }
+          Copy-Item $signed.FullName $file -Force
+
+          $sig = Get-AuthenticodeSignature -FilePath $file
+          if ($sig.SignatureType -ne 'Authenticode') {
+            throw "unexpected signature type '$($sig.SignatureType)'"
+          }
+
+          # Valid is the only accepted outcome, deliberately. It is the one status that proves both
+          # that the bytes were not modified after signing and that the chain reaches a root Windows
+          # trusts. A weaker gate was tried and dropped: with an untrusted chain Windows short-cuts
+          # to UnknownError and never reports HashMismatch, so "accept any non-fatal status" cannot
+          # tell a merely-untrusted signature from a tampered file.
+          #
+          # If this ever fires because the runner image lacks a root, install that root in an
+          # explicit step. Do not relax the gate: a signature nobody trusts still shows users
+          # "unknown publisher", which is the exact thing this milestone exists to remove.
+          if ($sig.Status -ne 'Valid') {
+            throw "signature is not valid: $($sig.Status) - $($sig.StatusMessage)"
+          }
+
+          # Without a timestamp the signature dies with the certificate, and SmartScreen starts
+          # warning about the very same bytes months later. Treat it as a failed signing run.
+          if (-not $sig.TimeStamperCertificate) {
+            throw 'signature carries no timestamp; it would expire with the certificate'
+          }
+
+          $expected = $env:PUBLISHER
+          if (-not $expected) { $expected = 'SignPath Foundation' }
+          if ($sig.SignerCertificate.Subject -notlike "*$expected*") {
+            throw "signed by '$($sig.SignerCertificate.Subject)', expected '$expected'"
+          }
+
+          # Catches a stale artifact being signed: the version resource is the only thing in the
+          # exe that says which build this is, and signing must not have changed it.
+          $want = "${{ github.ref_name }}" -replace '^v', ''
+          $version = (Get-Item $file).VersionInfo.FileVersion
+          if ($version -notlike "$want*") {
+            throw "signed exe reports version '$version', expected '$want'"
+          }
+
+          @(
+            'signature valid'
+            "publisher:  $($sig.SignerCertificate.Subject)"
+            "thumbprint: $($sig.SignerCertificate.Thumbprint)"
+            "timestamp:  $($sig.TimeStamperCertificate.NotBefore.ToUniversalTime().ToString('u'))"
+            "version:    $version"
+          ) | Out-File -Append $env:GITHUB_STEP_SUMMARY
+
+      # Deliberately after signing: signing changes both the bytes and the length, so a hash taken
+      # earlier would not match what users download and the in-app updater would reject every
+      # update as corrupt.
       - name: Compute SHA-256 and size
         id: meta
         shell: pwsh
@@ -73,41 +212,81 @@ jobs:
           [System.IO.File]::WriteAllLines((Join-Path $env:RUNNER_TEMP 'update.txt'), $lines, $utf8NoBom)
           Copy-Item (Join-Path $env:RUNNER_TEMP 'update.txt') 'update.txt' -Force
 
+      # The download warning is the one thing users actually hit, so the notes say plainly whether
+      # this build is signed. Never claim a signature the build does not have.
+      - name: Compose release notes
+        shell: pwsh
+        env:
+          SIGNED: ${{ steps.signcfg.outputs.configured }}
+          GITEE_MIRROR: ${{ steps.giteecfg.outputs.configured }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $size = [math]::Round((Get-Item 'build/release/bin/WinTools.exe').Length / 1MB, 2)
+          if ($env:SIGNED -eq 'true') {
+            $trust = @(
+              '已做代码签名（SignPath Foundation），带 RFC 3161 时间戳。右键 exe → 属性 → 数字签名可以查看。'
+              ''
+              '签名只能说明文件出自本项目的构建，不能免掉 SmartScreen 的信誉门槛——新版本的首次下载仍可能提示一次，选择「仍要运行」即可，之后不会再拦。'
+            )
+          } else {
+            $trust = @(
+              '本版本**未做代码签名**。Windows 可能提示「未知发布者」，原因是安装包没有可信证书，不是文件有问题：点「更多信息 → 仍要运行」。'
+              ''
+              '核对下面的 SHA-256 就能确认文件没有被改动或替换。'
+            )
+          }
+
+          # A List plus AddRange rather than one array literal: nesting $trust inside @() makes it a
+          # single element, and WriteAllLines then joins its members with spaces, so the blank line
+          # between the two sentences disappears and Markdown renders them as one run-on paragraph.
+          $body = [System.Collections.Generic.List[string]]::new()
+          $body.Add("## WinTools $tag")
+          $body.Add('')
+          $body.Add('Windows 多屏桌面工具箱：一个 exe，管好壁纸、窗口和便签。免安装，默认不联网，可手动开启自动更新。')
+          $body.Add('')
+          $body.Add('- **跨屏壁纸**：一张图铺满所有屏幕，拖动、缩放、旋转取景')
+          $body.Add('- **窗口位置记忆**：显示器断电、重连后，窗口自动回到原来的屏幕和位置')
+          $body.Add('- **屏幕便签**：置顶记事，五色纸、星标、截图直接贴，重启可恢复')
+          $body.Add('- **框选截图**：一个快捷键框选，图片直接进剪贴板')
+          $body.Add('- **桌面小工具**：日历等插件正在打磨，后续持续更新')
+          $body.Add('')
+          $body.Add("中英双语 · 深浅主题 · 快捷键可改 · $size MB")
+          $body.Add('')
+          $body.Add('### 关于「未知发布者」')
+          $body.Add('')
+          $body.AddRange([string[]]$trust)
+          $body.Add('')
+          if ($env:GITEE_MIRROR -ne 'true') {
+            $body.Add('> Gitee 镜像本次未同步，请从本页下载。')
+            $body.Add('')
+          }
+          $body.Add('### 校验')
+          $body.Add('')
+          $body.Add('下载 `WinTools.exe` 后核对 SHA-256：')
+          $body.Add('')
+          $body.Add('```')
+          $body.Add("${{ steps.meta.outputs.sha256 }}")
+          $body.Add('```')
+
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllLines('release-notes.md', $body, $utf8NoBom)
+
       - name: Release on GitHub
         uses: softprops/action-gh-release@v2
         with:
           files: |
             build/release/bin/WinTools.exe
             update.txt
-          body: |
-            ## WinTools ${{ github.ref_name }}
-
-            Windows 多屏桌面工具箱：一个 exe，管好壁纸、窗口和便签。免安装，默认不联网，可手动开启自动更新。
-
-            - **跨屏壁纸**：一张图铺满所有屏幕，拖动、缩放、旋转取景
-            - **窗口位置记忆**：显示器断电、重连后，窗口自动回到原来的屏幕和位置
-            - **屏幕便签**：置顶记事，五色纸、星标、截图直接贴，重启可恢复
-            - **框选截图**：一个快捷键框选，图片直接进剪贴板
-            - **桌面小工具**：日历等插件正在打磨，后续持续更新
-
-            中英双语 · 深浅主题 · 快捷键可改 · 约 1.2 MB
-
-            ### 校验
-            下载 `WinTools.exe` 后请核对 SHA-256：
-
-            ```
-            ${{ steps.meta.outputs.sha256 }}
-            ```
+          body_path: release-notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Release on Gitee
+        if: steps.giteecfg.outputs.configured == 'true'
         shell: pwsh
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
         run: |
-          if (-not $env:GITEE_TOKEN) { throw 'GITEE_TOKEN secret is missing; create it with the projects scope only' }
-
           $tag = "${{ github.ref_name }}"
           $api = 'https://gitee.com/api/v5/repos/YingKeWangLuo_admin/main'
           $release = $null
@@ -122,7 +301,7 @@ jobs:
               access_token    = $env:GITEE_TOKEN
               tag_name        = $tag
               name            = "WinTools $tag"
-              body            = "WinTools $tag — the same bytes as the GitHub release. SHA-256: ${{ steps.meta.outputs.sha256 }}"
+              body            = (Get-Content 'release-notes.md' -Raw)
               target_commitish = 'main'
             }
             $release = Invoke-RestMethod -Method Post -Uri "$api/releases" `
@@ -149,7 +328,14 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git fetch origin main
-          git checkout -B main origin/main
+
+          # -f matters when this run is a retry. A release that already succeeded once has pushed
+          # its feed commit to main, so main is then ahead of the tag; the Generate step has also
+          # rewritten the working copy of update.txt, and a plain checkout aborts with "local
+          # changes would be overwritten". Verified against a scratch repository: equal trees get
+          # away with it, main-ahead-of-tag does not. Forcing is safe because the authoritative
+          # feed lives in RUNNER_TEMP and is restored on the next line.
+          git checkout -f -B main origin/main
           Copy-Item (Join-Path $env:RUNNER_TEMP 'update.txt') 'update.txt' -Force
           git add update.txt
 
@@ -162,5 +348,9 @@ jobs:
           git commit -m "Update feed for $tag"
           git push origin HEAD:main
 
+          if (-not $env:GITEE_TOKEN) {
+            Write-Host 'GITEE_TOKEN is unset - feed published to GitHub only'
+            exit 0
+          }
           git remote add gitee "https://oauth2:$env:GITEE_TOKEN@gitee.com/YingKeWangLuo_admin/main.git"
           git push gitee HEAD:main
