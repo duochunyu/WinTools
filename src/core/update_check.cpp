@@ -11,7 +11,7 @@ namespace
 // The feed is a plain file in the main branch of each repository. A fixed path keeps the client
 // from having to know the latest tag before it can discover that a newer tag exists.
 constexpr std::wstring_view kGiteeFeed =
-    L"https://gitee.com/duochunyu/main/raw/main/update.txt";
+    L"https://gitee.com/YingKeWangLuo_admin/main/raw/main/update.txt";
 constexpr std::wstring_view kGithubFeed =
     L"https://raw.githubusercontent.com/duochunyu/WinTools/main/update.txt";
 

@@ -108,6 +108,12 @@ bool BeginRequest(
     ::WinHttpSetTimeouts(prepared.request.value, static_cast<int>(timeoutMs),
         static_cast<int>(timeoutMs), static_cast<int>(timeoutMs), static_cast<int>(timeoutMs));
 
+    // Gitee's raw endpoint answers with a 302 to a signed raw.giteeusercontent.com URL. WinHTTP
+    // defaults to refusing redirects, which would make every feed fetch look like "HTTP 302".
+    DWORD redirects = WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS;
+    ::WinHttpSetOption(prepared.request.value, WINHTTP_OPTION_REDIRECT_POLICY, &redirects,
+        sizeof(redirects));
+
     if (!::WinHttpSendRequest(prepared.request.value, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
             WINHTTP_NO_REQUEST_DATA, 0, 0, 0)
         || !::WinHttpReceiveResponse(prepared.request.value, nullptr))
