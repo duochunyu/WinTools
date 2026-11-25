@@ -36,6 +36,10 @@ struct UpdateCheck
 /// Pure orchestration: fetch each source, parse the feed, compare against the current version.
 /// The caller injects the transport, so unit tests can feed hostile or offline responses without
 /// opening a socket.
+///
+/// A source whose version is not newer does not end the search: mirrors lag, and the list is
+/// ordered mirror-first, so a stale mirror must not be able to hide a release another source
+/// already publishes. "Up to date" is only reported after every source has said so.
 [[nodiscard]] UpdateCheck CheckForUpdate(
     const FetchText& fetch, std::wstring_view customSource, const AppVersion& current);
 
