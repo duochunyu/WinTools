@@ -23,3 +23,8 @@ No installer; no network access unless you opt in to update checks.
 Bilingual UI · light and dark themes · editable shortcuts · MIT licensed
 
 [Download](https://github.com/duochunyu/WinTools/releases/latest) · Windows 10/11 x64 · about 1.2 MB
+
+<sub>Free code signing provided by [SignPath.io](https://signpath.io/), certificate by
+[SignPath Foundation](https://signpath.org/). What that means for the download you have, and
+whether this release carries a signature yet, is in
+[CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md).</sub>

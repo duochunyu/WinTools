@@ -283,6 +283,8 @@ jobs:
           $body.Add('```')
           $body.Add("${{ steps.meta.outputs.sha256 }}")
           $body.Add('```')
+          $body.Add('')
+          $body.Add('<sub>Free code signing provided by [SignPath.io](https://signpath.io/), certificate by [SignPath Foundation](https://signpath.org/). Whether this particular build carries a signature is stated above.</sub>')
 
           $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
           [System.IO.File]::WriteAllText('release-notes.md', ($body -join "`n") + "`n", $utf8NoBom)

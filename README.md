@@ -22,3 +22,7 @@
 中英双语 · 深浅主题 · 快捷键可改 · MIT 开源
 
 [下载最新版](https://github.com/duochunyu/WinTools/releases/latest) · Windows 10/11 x64 · 约 1.2 MB
+
+<sub>免费代码签名由 [SignPath.io](https://signpath.io/) 提供，证书来自
+[SignPath Foundation](https://signpath.org/)。你手上的这个版本是否已带签名，见
+[CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md)。</sub>
