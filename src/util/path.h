@@ -22,6 +22,11 @@ namespace wintools::util
 /// %LOCALAPPDATA%\WinTools\wallpaper\state.txt - snapshot taken before the wallpaper is changed.
 [[nodiscard]] std::filesystem::path StateFile();
 
+/// %LOCALAPPDATA%\WinTools\update - downloaded installers, pending update markers and the
+/// pre-upgrade snapshot. Kept separate from the config and notes so an update never has to
+/// walk through user data to find its own files.
+[[nodiscard]] std::filesystem::path UpdateFolder();
+
 /// %LOCALAPPDATA%\WinTools\WinTools.log - every log line, appended.
 ///
 /// A tray app normally has no console at all, so without this file a failure is completely

@@ -1,9 +1,11 @@
 name: Release
 
-# Auto-publish a GitHub Release with the single-file WinTools.exe whenever a tag
-# like v1.2.3 is pushed. The build runs on a Windows runner (VS2022 + Windows
-# SDK + CMake are preinstalled on windows-latest), so scripts/build.bat works
-# unchanged. The workflow computes the SHA-256 and attaches the binary.
+# Auto-publish a GitHub Release and a Gitee Release whenever a tag like v1.2.3 is pushed.
+# The build runs once on windows-latest, the SHA-256 is computed once, and both mirrors publish
+# those exact bytes. The update feed is written to both main branches for the in-app updater.
+#
+# Prerequisites: a Gitee repository `YingKeWangLuo_admin/main` and a repository secret GITEE_TOKEN with
+# only the `projects` scope. The token is never written to a file or passed to an upload as text.
 
 on:
   push:
@@ -20,25 +22,67 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # The tag is a trigger, not a version source. Refuse to build when it disagrees with
+      # project(VERSION) in CMakeLists.txt: otherwise the exe would report a different version
+      # from the release it is published under, and auto-update would compare against a lie.
+      - name: Verify tag matches project version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}" -replace '^v', ''
+          $line = Select-String -Path CMakeLists.txt -Pattern '^\s*VERSION\s+([0-9]+\.[0-9]+\.[0-9]+)\s*$' | Select-Object -First 1
+          if (-not $line) { throw 'cannot find project(VERSION) in CMakeLists.txt' }
+          $version = $line.Matches[0].Groups[1].Value
+          if ($tag -ne $version) {
+            throw "tag '$tag' does not match project VERSION '$version'"
+          }
+          "project version $version matches tag" | Out-File -Append $env:GITHUB_STEP_SUMMARY
+
       - name: Build (release)
         shell: cmd
         run: scripts\build.bat windows-x64-release
 
-      - name: Compute SHA-256
-        id: sha
+      - name: Compute SHA-256 and size
+        id: meta
         shell: pwsh
         run: |
-          $hash = (Get-FileHash build/release/bin/WinTools.exe -Algorithm SHA256).Hash
+          $file = 'build/release/bin/WinTools.exe'
+          $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant()
+          $size = (Get-Item $file).Length
           "sha256=$hash" | Out-File -Append $env:GITHUB_OUTPUT
+          "size=$size" | Out-File -Append $env:GITHUB_OUTPUT
+          "sha256=$hash size=$size" | Out-File -Append $env:GITHUB_STEP_SUMMARY
 
-      - name: Release
+      # The feed is generated before either release: the asset URLs are predictable from the tag,
+      # and both releases must point at the same bytes rather than at a second build.
+      - name: Generate update.txt
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag -replace '^v', ''
+          $lines = @(
+            'schema=1'
+            "version=$version"
+            "size=${{ steps.meta.outputs.size }}"
+            "sha256=${{ steps.meta.outputs.sha256 }}"
+            "url=https://gitee.com/YingKeWangLuo_admin/main/releases/download/$tag/WinTools.exe"
+            "urlGithub=https://github.com/duochunyu/WinTools/releases/download/$tag/WinTools.exe"
+            'notes.zh=修复问题并改进稳定性，详情见 Release 页面。'
+            'notes.en=Bug fixes and stability improvements; see the release page for details.'
+          )
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllLines((Join-Path $env:RUNNER_TEMP 'update.txt'), $lines, $utf8NoBom)
+          Copy-Item (Join-Path $env:RUNNER_TEMP 'update.txt') 'update.txt' -Force
+
+      - name: Release on GitHub
         uses: softprops/action-gh-release@v2
         with:
-          files: build/release/bin/WinTools.exe
+          files: |
+            build/release/bin/WinTools.exe
+            update.txt
           body: |
             ## WinTools ${{ github.ref_name }}
 
-            Windows 多屏桌面工具箱：一个 exe，管好壁纸、窗口和便签。免安装，不联网。
+            Windows 多屏桌面工具箱：一个 exe，管好壁纸、窗口和便签。免安装，默认不联网，可手动开启自动更新。
 
             - **跨屏壁纸**：一张图铺满所有屏幕，拖动、缩放、旋转取景
             - **窗口位置记忆**：显示器断电、重连后，窗口自动回到原来的屏幕和位置
@@ -52,7 +96,71 @@ jobs:
             下载 `WinTools.exe` 后请核对 SHA-256：
 
             ```
-            ${{ steps.sha.outputs.sha256 }}
+            ${{ steps.meta.outputs.sha256 }}
             ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Release on Gitee
+        shell: pwsh
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          if (-not $env:GITEE_TOKEN) { throw 'GITEE_TOKEN secret is missing; create it with the projects scope only' }
+
+          $tag = "${{ github.ref_name }}"
+          $api = 'https://gitee.com/api/v5/repos/YingKeWangLuo_admin/main'
+          $release = $null
+          try {
+            $release = Invoke-RestMethod -Uri "$api/releases/tags/$tag`?access_token=$env:GITEE_TOKEN"
+          } catch {
+            Write-Host "no existing Gitee release for $tag"
+          }
+
+          if (-not $release -or -not $release.id) {
+            $payload = @{
+              access_token    = $env:GITEE_TOKEN
+              tag_name        = $tag
+              name            = "WinTools $tag"
+              body            = "WinTools $tag — the same bytes as the GitHub release. SHA-256: ${{ steps.meta.outputs.sha256 }}"
+              target_commitish = 'main'
+            }
+            $release = Invoke-RestMethod -Method Post -Uri "$api/releases" `
+              -Body ($payload | ConvertTo-Json) -ContentType 'application/json'
+          }
+
+          $id = $release.id
+          foreach ($file in @('build/release/bin/WinTools.exe', 'update.txt')) {
+            curl.exe --fail-with-body --silent --show-error --retry 2 `
+              -F "access_token=$env:GITEE_TOKEN" `
+              -F "file=@$file" `
+              "$api/releases/$id/attach_files"
+            if ($LASTEXITCODE -ne 0) { throw "Gitee upload failed for $file" }
+          }
+
+      # The in-app updater reads update.txt from a fixed raw path, not from a release attachment.
+      # Commit the generated feed to both main branches after the releases exist.
+      - name: Publish update.txt to both main branches
+        shell: pwsh
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin main
+          git checkout -B main origin/main
+          Copy-Item (Join-Path $env:RUNNER_TEMP 'update.txt') 'update.txt' -Force
+          git add update.txt
+
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host 'update.txt already current'
+            exit 0
+          }
+
+          git commit -m "Update feed for $tag"
+          git push origin HEAD:main
+
+          git remote add gitee "https://oauth2:$env:GITEE_TOKEN@gitee.com/YingKeWangLuo_admin/main.git"
+          git push gitee HEAD:main

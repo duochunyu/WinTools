@@ -6,6 +6,7 @@
 #include <sstream>
 
 #include "core/note_theme.h"
+#include "util/file.h"
 #include "util/log.h"
 #include "util/path.h"
 #include "util/text.h"
@@ -224,16 +225,7 @@ bool NoteStore::Save() const
         }
     }
 
-    std::ofstream out(file, std::ios::binary | std::ios::trunc);
-    if (!out)
-    {
-        util::LogError(L"cannot open '{}' for writing", file.wstring());
-        return false;
-    }
-
-    const std::string utf8 = util::ToUtf8(FormatNoteIndex(*this));
-    out.write(utf8.data(), static_cast<std::streamsize>(utf8.size()));
-    return static_cast<bool>(out);
+    return util::AtomicWrite(file, FormatNoteIndex(*this));
 }
 
 std::filesystem::path NoteStore::BodyPath(std::wstring_view id) const

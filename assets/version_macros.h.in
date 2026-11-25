@@ -1,0 +1,17 @@
+#pragma once
+
+// Generated from CMakeLists.txt's project(VERSION). Do not edit the generated copy under build/.
+// There is exactly one version number in this repository; app.rc reads the same macros, so the
+// number Explorer shows and the number the CLI prints cannot drift apart again.
+//
+// This header is intentionally macro-only: rc.exe uses a C-style preprocessor and cannot parse
+// C++ syntax. The typed C++ constant lives in util/version.h, which includes this file.
+
+#define WINTOOLS_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
+#define WINTOOLS_VERSION_MINOR @PROJECT_VERSION_MINOR@
+#define WINTOOLS_VERSION_PATCH @PROJECT_VERSION_PATCH@
+
+// "0.2.0" for user-facing text; "0, 2, 0, 0" for the VERSIONINFO resource's numeric fields.
+#define WINTOOLS_VERSION_STRING L"@PROJECT_VERSION@"
+#define WINTOOLS_VERSION_COMMA @PROJECT_VERSION_MAJOR@, @PROJECT_VERSION_MINOR@, @PROJECT_VERSION_PATCH@, 0
+#define WINTOOLS_VERSION_FILESTRING L"@PROJECT_VERSION@.0"

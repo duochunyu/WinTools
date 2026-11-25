@@ -76,6 +76,16 @@ struct Settings
     /// former because a desktop clock that jerks looks broken to most people.
     bool canvasSweep{ true };
 
+    /// Update checking is off by default: the product promises "no network" and the user opted
+    /// into auto-update explicitly. A zero keeps that promise for existing installations.
+    bool autoCheckUpdate{};
+
+    /// Extra feed URL tried before the built-in Gitee/GitHub sources. Empty uses the defaults.
+    std::wstring updateSource;
+
+    /// When the last check ran, as display text. Purely informational, like lastAutoRestore.
+    std::wstring lastUpdateCheck;
+
     /// Global shortcuts. Defaults are Ctrl+Alt+N (new note) and Ctrl+Alt+S (area capture).
     core::Hotkeys hotkeys{ core::DefaultHotkeys() };
 
@@ -83,6 +93,11 @@ struct Settings
     [[nodiscard]] bool Save() const;
 
     [[nodiscard]] static std::filesystem::path FilePath();
+
+    /// Points Load/Save at a scratch file for tests. Empty (the default) means the real
+    /// %LOCALAPPDATA%\WinTools\settings.txt. Without this, testing the v1/v2 parse would mean
+    /// overwriting the user's own settings - the same reason NoteStore has SetFolder.
+    static void SetFileForTests(std::filesystem::path file);
 };
 
 } // namespace wintools::app

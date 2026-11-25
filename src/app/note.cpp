@@ -19,6 +19,7 @@
 #include "core/note_store.h"
 #include "core/note_theme.h"
 #include "core/rtf.h"
+#include "util/file.h"
 #include "util/i18n.h"
 #include "util/log.h"
 
@@ -357,14 +358,7 @@ bool WriteWholeFile(const std::filesystem::path& path, const std::string& bytes)
         std::filesystem::create_directories(path.parent_path(), ec);
     }
 
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!out)
-    {
-        return false;
-    }
-
-    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-    return static_cast<bool>(out);
+    return util::AtomicWriteBytes(path, bytes);
 }
 
 bool StreamingEdit(HWND control, UINT message, DWORD flags, void* cookie,

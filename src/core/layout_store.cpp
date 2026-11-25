@@ -6,6 +6,7 @@
 #include <system_error>
 #include <vector>
 
+#include "util/file.h"
 #include "util/log.h"
 #include "util/path.h"
 #include "util/text.h"
@@ -143,24 +144,7 @@ bool SaveLayout(const Layout& layout, const std::filesystem::path& file)
             Sanitize(window.title));
     }
 
-    std::ofstream out(file, std::ios::binary | std::ios::trunc);
-    if (!out)
-    {
-        util::LogError(L"cannot open '{}' for writing", file.wstring());
-        return false;
-    }
-
-    const std::string utf8 = util::ToUtf8(text);
-    out.write(utf8.data(), static_cast<std::streamsize>(utf8.size()));
-    out.flush();
-
-    if (!out)
-    {
-        util::LogError(L"cannot write '{}'", file.wstring());
-        return false;
-    }
-
-    return true;
+    return util::AtomicWrite(file, text);
 }
 
 std::optional<Layout> LoadLayout(const std::filesystem::path& file)

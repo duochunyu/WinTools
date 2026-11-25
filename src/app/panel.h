@@ -101,6 +101,18 @@ enum class PanelAction
     /// Put both shortcuts back to their defaults.
     ResetHotkeys,
 
+    /// Background check for a newer release. Failure is silent apart from the status line.
+    CheckUpdate,
+
+    /// User turned the opt-in background check on or off.
+    ToggleAutoCheck,
+
+    /// Show the release notes of the version found by the last check, before downloading.
+    ShowUpdateNotes,
+
+    /// The user accepted the notes: download, verify, replace, restart.
+    InstallUpdate,
+
     /// Temporarily give up the global hotkeys so their combinations can be recorded. Without this,
     /// pressing the old Ctrl+Alt+N while rebinding would fire the action instead of reaching the
     /// panel's key handler.
@@ -212,6 +224,15 @@ struct PanelState
     std::wstring status;
     bool statusIsError{};
 
+    /// Result of the last update check. version is empty when no newer version was found.
+    bool autoCheckUpdate{};
+    std::wstring updateAvailableVersion;
+    std::wstring updateNotesZh;
+    std::wstring updateNotesEn;
+    std::uint64_t updateSize{};
+    std::wstring updateSha256;
+    std::wstring lastUpdateCheck;
+
     [[nodiscard]] bool HasRows() const
     {
         return !windows.empty();
@@ -283,6 +304,10 @@ public:
 
     /// Re-reads state from the provider, re-fits the window and repaints.
     void Refresh();
+
+    /// Opens the release-notes modal from outside the panel (the tray menu does this).
+    /// No-op when no newer version is known, so the notes can never describe nothing.
+    void ShowUpdateNotes();
 
     [[nodiscard]] HWND Handle() const
     {
@@ -445,6 +470,9 @@ private:
         ConfigHotkey,
         ConfigResetHotkeys,
         ConfigOpenLog,
+        ConfigAutoCheck,
+        ConfigCheckUpdate,
+        ConfigUpdateNotes,
         Quit,
         PopupItem,   // index = item within the open popup
         PopupRemove, // index = the popup row whose trailing "x" was hit
@@ -487,6 +515,7 @@ private:
         Segments, ///< two or three choices, the current one in `selected`
         Hotkey,   ///< the whole row starts recording; `value` is the combination or the hint
         Link,     ///< the whole row runs something, with a trailing chevron
+        Text,     ///< read-only label and value; no hot target at all
         Button,   ///< only the button on the right is clickable
     };
 
@@ -873,6 +902,7 @@ private:
         None,
         Quit,
         Help,
+        UpdateNotes,
     };
 
     Modal m_modal{ Modal::None };

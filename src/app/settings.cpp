@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <fstream>
 #include <system_error>
+#include <utility>
 
 #include "app/features.h"
+#include "util/file.h"
 #include "util/log.h"
 #include "util/path.h"
 #include "util/text.h"
@@ -14,6 +16,12 @@ namespace wintools::app
 
 namespace
 {
+
+/// Written as the first line from now on. A file without it is v1 and parses exactly as before:
+/// adding a header must never make an existing settings file lose its values. The number exists
+/// so a future build can tell "key present but meaning changed" apart from "key never existed" -
+/// something the skip-unknown-keys rule alone cannot express.
+constexpr wchar_t kSettingsHeaderV2[] = L"# WinTools settings v2";
 
 constexpr wchar_t kKeyWallpaperSource[] = L"wallpaper.source=";
 constexpr wchar_t kKeyZoom[] = L"wallpaper.zoom=";
@@ -33,6 +41,9 @@ constexpr wchar_t kKeyCanvasX[] = L"canvas.x=";
 constexpr wchar_t kKeyCanvasY[] = L"canvas.y=";
 constexpr wchar_t kKeyCanvasSize[] = L"canvas.size=";
 constexpr wchar_t kKeyCanvasSweep[] = L"canvas.sweep=";
+constexpr wchar_t kKeyAutoCheckUpdate[] = L"update.autoCheck=";
+constexpr wchar_t kKeyUpdateSource[] = L"update.source=";
+constexpr wchar_t kKeyLastUpdateCheck[] = L"update.lastCheck=";
 /// One line per shortcut. The names are spelled out rather than numbered so the file stays
 /// legible, and the first two are the names older files already carry - a binding saved by an
 /// earlier version has to keep working.
@@ -85,9 +96,19 @@ void ToDouble(const std::wstring& value, double& target)
 
 } // namespace
 
+namespace
+{
+std::filesystem::path g_testFile;
+} // namespace
+
+void Settings::SetFileForTests(std::filesystem::path file)
+{
+    g_testFile = std::move(file);
+}
+
 std::filesystem::path Settings::FilePath()
 {
-    return util::AppDataFolder() / L"settings.txt";
+    return g_testFile.empty() ? util::AppDataFolder() / L"settings.txt" : g_testFile;
 }
 
 Settings Settings::Load()
@@ -115,6 +136,9 @@ Settings Settings::Load()
 
         if (line.empty() || line.starts_with(L"#"))
         {
+            // The v2 header is a comment line, so an unmodified v1 parser already accepts it.
+            // A future v3 that reinterprets a key must branch on the header here, before the
+            // key/value dispatch below, rather than silently reading new text as old semantics.
             continue;
         }
 
@@ -242,6 +266,18 @@ Settings Settings::Load()
         {
             settings.canvasSweep = ToBool(value);
         }
+        else if (key == kKeyAutoCheckUpdate)
+        {
+            settings.autoCheckUpdate = ToBool(value);
+        }
+        else if (key == kKeyUpdateSource)
+        {
+            settings.updateSource = value;
+        }
+        else if (key == kKeyLastUpdateCheck)
+        {
+            settings.lastUpdateCheck = value;
+        }
         else
         {
             // An absent or unparsable value keeps the default, so settings written before a
@@ -296,7 +332,8 @@ bool Settings::Save() const
     // Written in full every time. The file is six lines; a merge-in-place implementation would
     // only add a way to be wrong.
     std::wstring text;
-    text += L"# WinTools settings\n";
+    text += kSettingsHeaderV2;
+    text += L'\n';
     text += std::format(L"{}{}\n", kKeyWallpaperSource, wallpaperSource);
     text += std::format(L"{}{:.4f}\n", kKeyZoom, wallpaperView.zoom);
     text += std::format(L"{}{:.4f}\n", kKeyFocusX, wallpaperView.focusX);
@@ -315,29 +352,15 @@ bool Settings::Save() const
     text += std::format(L"{}{}\n", kKeyCanvasY, canvas.y);
     text += std::format(L"{}{}\n", kKeyCanvasSize, canvas.size);
     text += std::format(L"{}{}\n", kKeyCanvasSweep, canvasSweep ? 1 : 0);
+    text += std::format(L"{}{}\n", kKeyAutoCheckUpdate, autoCheckUpdate ? 1 : 0);
+    text += std::format(L"{}{}\n", kKeyUpdateSource, updateSource);
+    text += std::format(L"{}{}\n", kKeyLastUpdateCheck, lastUpdateCheck);
     for (const HotkeyKey& entry : kHotkeyKeys)
     {
         text += std::format(L"{}{}\n", entry.name, core::FormatHotkey(hotkeys.At(entry.action)));
     }
 
-    std::ofstream out(file, std::ios::binary | std::ios::trunc);
-    if (!out)
-    {
-        util::LogError(L"cannot open '{}' for writing", file.wstring());
-        return false;
-    }
-
-    const std::string utf8 = util::ToUtf8(text);
-    out.write(utf8.data(), static_cast<std::streamsize>(utf8.size()));
-    out.flush();
-
-    if (!out)
-    {
-        util::LogError(L"cannot write '{}'", file.wstring());
-        return false;
-    }
-
-    return true;
+    return util::AtomicWrite(file, text);
 }
 
 } // namespace wintools::app

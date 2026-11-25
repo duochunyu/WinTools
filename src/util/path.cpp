@@ -55,6 +55,11 @@ std::filesystem::path StateFile()
     return AppDataFolder() / L"wallpaper" / L"state.txt";
 }
 
+std::filesystem::path UpdateFolder()
+{
+    return AppDataFolder() / L"update";
+}
+
 std::filesystem::path LogFile()
 {
     return AppDataFolder() / L"WinTools.log";

@@ -1,8 +1,10 @@
 #include "app/cli.h"
 
 #include <string_view>
+#include <string>
 
 #include "util/log.h"
+#include "util/version.h"
 
 namespace wintools::app
 {
@@ -41,6 +43,32 @@ ParseResult ParseCommandLine(int argc, wchar_t** argv)
     if (first == L"-h" || first == L"--help" || first == L"help")
     {
         return ParseResult{ Options{ Command::Help }, {} };
+    }
+
+    // The version is a compile-time fact from the generated header, never read from a file.
+    // Auto-update needs to compare the running exe against the feed's version.
+    if (first == L"--version" || first == L"-v")
+    {
+        return ParseResult{ Options{ Command::Version }, {} };
+    }
+
+    if (first == L"--check-update")
+    {
+        Options options;
+        options.command = Command::CheckUpdate;
+        for (int index = 2; index < argc; ++index)
+        {
+            const std::wstring_view argument = argv[index];
+            if (argument == L"--source" && index + 1 < argc)
+            {
+                options.source = argv[++index];
+            }
+            else
+            {
+                return ParseResult{ std::nullopt, L"unknown option: " + std::wstring{ argument } };
+            }
+        }
+        return ParseResult{ options, {} };
     }
 
     if (first == L"monitors")
@@ -113,9 +141,12 @@ ParseResult ParseCommandLine(int argc, wchar_t** argv)
 
 void PrintUsage()
 {
-    LogInfo(L"WinTools - 多显示器壁纸与窗口布局工具");
+    LogInfo(L"WinTools {} - 多显示器壁纸与窗口布局工具",
+        std::wstring_view{ wintools::kVersion });
     LogInfo(L"");
     LogInfo(L"用法:");
+    LogInfo(L"  WinTools.exe --version                    打印版本号");
+    LogInfo(L"  WinTools.exe --check-update [--source URL] 检查是否有新版本");
     LogInfo(L"  WinTools.exe monitors                    列出显示器及其虚拟桌面矩形");
     LogInfo(L"  WinTools.exe windows                     列出所有可管理的窗口");
     LogInfo(L"");

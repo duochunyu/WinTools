@@ -20,6 +20,7 @@
 #include "core/note_theme.h"
 #include "util/i18n.h"
 #include "util/log.h"
+#include "util/version.h"
 
 #include "app/features.h"
 
@@ -752,6 +753,31 @@ void DrawTextAt(
     RECT target = rect;
     ::DrawTextW(dc, text.data(), static_cast<int>(text.size()), &target,
         flags | DT_SINGLELINE | DT_NOPREFIX);
+
+    ::SetBkMode(dc, oldMode);
+    ::SetTextColor(dc, oldColor);
+    ::SelectObject(dc, oldFont);
+}
+
+/// Untrusted multi-line text (release notes). DrawTextBlock forces DT_SINGLELINE for every
+/// label, which silently defeats DT_WORDBREAK; notes need a real wrapping pass inside the card.
+void DrawTextWrapped(
+    HDC dc, HFONT font, COLORREF color, const RECT& rect, std::wstring_view text)
+{
+    if (text.empty() || rect.right <= rect.left || rect.bottom <= rect.top)
+    {
+        return;
+    }
+
+    text = util::i18n::Text(text);
+
+    const HGDIOBJ oldFont = ::SelectObject(dc, font);
+    const COLORREF oldColor = ::SetTextColor(dc, color);
+    const int oldMode = ::SetBkMode(dc, TRANSPARENT);
+
+    RECT target = rect;
+    ::DrawTextW(dc, text.data(), static_cast<int>(text.size()), &target,
+        DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
 
     ::SetBkMode(dc, oldMode);
     ::SetTextColor(dc, oldColor);
@@ -1609,6 +1635,21 @@ void Panel::Refresh()
     }
 }
 
+void Panel::ShowUpdateNotes()
+{
+    if (m_state.updateAvailableVersion.empty())
+    {
+        return;
+    }
+
+    m_popup = Popup::None;
+    m_modal = Modal::UpdateNotes;
+    if (m_window != nullptr)
+    {
+        ::InvalidateRect(m_window, nullptr, FALSE);
+    }
+}
+
 void Panel::ConstrainToWorkArea()
 {
     if (m_window == nullptr || ::IsIconic(m_window))
@@ -2323,12 +2364,22 @@ Panel::Geometry Panel::ComputeGeometry() const
                 g.configRows.push_back(std::move(entry));
             };
 
-            const auto link = [&](const wchar_t* label, Hot hot)
+            const auto link = [&](std::wstring label, Hot hot)
             {
                 Geometry::ConfigRow entry;
                 entry.kind = ConfigControl::Link;
                 entry.hot = hot;
-                entry.label = label;
+                entry.label = std::move(label);
+                entry.rect = take(kConfigRowHeight);
+                g.configRows.push_back(std::move(entry));
+            };
+
+            const auto text = [&](std::wstring label, std::wstring value)
+            {
+                Geometry::ConfigRow entry;
+                entry.kind = ConfigControl::Text;
+                entry.label = std::move(label);
+                entry.value = std::move(value);
                 entry.rect = take(kConfigRowHeight);
                 g.configRows.push_back(std::move(entry));
             };
@@ -2371,6 +2422,22 @@ Panel::Geometry Panel::ComputeGeometry() const
                     top + kButtonHeight };
                 g.configRows.push_back(std::move(entry));
             }
+
+            // --- Update ---
+            // On the right column: the left one is already full at the sheet's design height,
+            // and a row laid out past the footer would be neither drawn nor clickable.
+            heading(L"更新");
+            toggle(L"自动检查更新", Hot::ConfigAutoCheck, m_state.autoCheckUpdate);
+            link(m_state.updateAvailableVersion.empty() ? std::wstring{ L"检查更新" }
+                                                        : util::i18n::Format(L"有新版本 {}",
+                                                              m_state.updateAvailableVersion),
+                Hot::ConfigCheckUpdate);
+            if (!m_state.updateAvailableVersion.empty())
+            {
+                link(L"查看更新说明", Hot::ConfigUpdateNotes);
+            }
+            text(L"上次检查",
+                m_state.lastUpdateCheck.empty() ? L"—" : m_state.lastUpdateCheck);
             break;
         }
 
@@ -3328,6 +3395,22 @@ void Panel::PaintConfigBlock(HDC dc, const Geometry& geometry)
                     RECT{ row.rect.left, row.rect.top, row.rect.right - 2, row.rect.bottom },
                     L"\u203A", DT_RIGHT | DT_VCENTER);
                 break;
+
+            case ConfigControl::Text:
+            {
+                // Read-only rows get the same two columns as a shortcut row: a value that is
+                // pinned to the far right would leave a gap that reads like a missing control.
+                const int labelWidth =
+                    static_cast<int>(MeasureText(m_measure, m_fontBody, row.label).cx);
+                const int valueLeft = label.left + labelWidth + 12;
+                DrawTextBlock(dc, m_fontBody, t.text2,
+                    RECT{ label.left, label.top, valueLeft - 12, label.bottom }, row.label,
+                    DT_LEFT | DT_VCENTER);
+                DrawTextBlock(dc, m_fontAux, t.text3,
+                    RECT{ valueLeft, row.rect.top, row.rect.right - 2, row.rect.bottom },
+                    row.value, DT_RIGHT | DT_VCENTER | DT_END_ELLIPSIS);
+                break;
+            }
 
             case ConfigControl::Button:
                 DrawButton(dc, m_measure, t, m_fontBody, row.control, row.label, false, rowHot,
@@ -5095,10 +5178,11 @@ Panel::ModalLayout Panel::LayoutModal(const Geometry& geometry) const
     // design units of sheet on either side.
     const int width = 560;
     const bool help = m_modal == Modal::Help;
+    const bool notes = m_modal == Modal::UpdateNotes;
 
     // Height follows the content: seven key lines, four notes, then the button row. A fixed
     // height was leaving a hand's width of blank card under a two-line confirmation.
-    const int height = help ? 304 : 168;
+    const int height = help ? 304 : notes ? 300 : 168;
 
     layout.card = RECT{ (m_clientW - width) / 2, (geometry.clientHeight - height) / 2,
         (m_clientW + width) / 2, (geometry.clientHeight + height) / 2 };
@@ -5108,6 +5192,16 @@ Panel::ModalLayout Panel::LayoutModal(const Geometry& geometry) const
 
     if (help)
     {
+        layout.buttons.push_back(RECT{ layout.card.right - 20 - buttonWidth, top,
+            layout.card.right - 20, top + kButtonHeight });
+        return layout;
+    }
+
+    if (notes)
+    {
+        // Update now is the default action; Later keeps the user in control.
+        layout.buttons.push_back(RECT{ layout.card.right - 20 - buttonWidth * 2 - 8, top,
+            layout.card.right - 20 - buttonWidth - 8, top + kButtonHeight });
         layout.buttons.push_back(RECT{ layout.card.right - 20 - buttonWidth, top,
             layout.card.right - 20, top + kButtonHeight });
         return layout;
@@ -5129,16 +5223,53 @@ void Panel::PaintModal(HDC dc, const Geometry& geometry)
 
     const ModalLayout layout = LayoutModal(geometry);
     const bool help = m_modal == Modal::Help;
+    const bool notes = m_modal == Modal::UpdateNotes;
 
     FillRounded(dc, layout.card, 12, t.bg);
     StrokeRounded(dc, layout.card, 12, t.line2);
 
+    const wchar_t* modalTitle = help ? L"键盘与操作"
+        : notes ? L"新版本说明"
+        : L"退出 WinTools？";
     DrawTextBlock(dc, m_fontTitle, t.text,
         RECT{ layout.card.left + 20, layout.card.top + 14, layout.card.right - 20,
             layout.card.top + 38 },
-        help ? L"键盘与操作" : L"退出 WinTools？", DT_LEFT);
+        modalTitle, DT_LEFT);
 
-    if (help)
+    if (notes)
+    {
+        const int left = layout.card.left + 20;
+        const int right = layout.card.right - 20;
+        int y = layout.card.top + 46;
+
+        DrawTextBlock(dc, m_fontBody, t.text3,
+            RECT{ left, y, right, y + 20 },
+            util::i18n::Format(L"当前版本 {} → 新版本 {}",
+                std::wstring_view{ wintools::kVersion }, m_state.updateAvailableVersion),
+            DT_LEFT | DT_END_ELLIPSIS);
+        y += 26;
+
+        // notes.* is untrusted text from the feed: drawn as plain text with ellipsis, never
+        // interpreted as markup, and already capped to 4096 characters by the feed parser.
+        std::wstring description = util::i18n::IsEnglish() && !m_state.updateNotesEn.empty()
+            ? m_state.updateNotesEn : m_state.updateNotesZh;
+        if (description.empty())
+        {
+            description = L"（本次更新没有提供说明）";
+        }
+        DrawTextWrapped(dc, m_fontBody, t.text2, RECT{ left, y, right, y + 140 },
+            description);
+
+        y = layout.card.top + 218;
+        DrawTextBlock(dc, m_fontAux, t.text3, RECT{ left, y, right, y + 16 },
+            util::i18n::Format(L"大小：{} 字节", m_state.updateSize),
+            DT_LEFT | DT_END_ELLIPSIS);
+        y += 18;
+        DrawTextBlock(dc, m_fontAux, t.text3, RECT{ left, y, right, y + 16 },
+            util::i18n::Format(L"SHA-256：{}", m_state.updateSha256.substr(0, 16)),
+            DT_LEFT | DT_END_ELLIPSIS);
+    }
+    else if (help)
     {
         // Two columns, not one padded string: the keys line up because they are drawn into their
         // own column, which a run of spaces cannot do across CJK and Latin metrics.
@@ -5203,6 +5334,15 @@ void Panel::PaintModal(HDC dc, const Geometry& geometry)
     {
         DrawButton(dc, m_measure, t, m_fontBody, layout.buttons[0], L"知道了", true,
             (m_hot == Hot::ModalButton), false, false, false, m_spinAngle);
+        return;
+    }
+
+    if (notes)
+    {
+        DrawButton(dc, m_measure, t, m_fontBody, layout.buttons[0], L"稍后", false,
+            (m_hot == Hot::ModalButton) && m_hotIndex == 0, false, false, false, m_spinAngle);
+        DrawButton(dc, m_measure, t, m_fontBody, layout.buttons[1], L"立即更新", true,
+            (m_hot == Hot::ModalButton) && m_hotIndex == 1, false, false, false, m_spinAngle);
         return;
     }
 
@@ -5352,6 +5492,9 @@ RECT Panel::RectForTarget(const Geometry& geometry, const Target& target) const
         case Hot::ConfigHotkey:
         case Hot::ConfigResetHotkeys:
         case Hot::ConfigOpenLog:
+        case Hot::ConfigAutoCheck:
+        case Hot::ConfigCheckUpdate:
+        case Hot::ConfigUpdateNotes:
             for (const Geometry::ConfigRow& row : geometry.configRows)
             {
                 if (row.hot != target.hot || row.index != target.index)
@@ -5701,6 +5844,15 @@ void Panel::ActivateModal(int button)
         return;
     }
 
+    if (modal == Modal::UpdateNotes && button == 1)
+    {
+        if (m_onAction)
+        {
+            m_onAction(PanelRequest{ PanelAction::InstallUpdate });
+        }
+        return;
+    }
+
     ::InvalidateRect(m_window, nullptr, FALSE);
 }
 
@@ -5759,6 +5911,19 @@ void Panel::Activate(const Target& target)
 
         case Hot::ConfigOpenLog:
             emit(PanelAction::OpenLog);
+            return;
+
+        case Hot::ConfigAutoCheck:
+            emit(PanelAction::ToggleAutoCheck);
+            return;
+
+        case Hot::ConfigCheckUpdate:
+            emit(PanelAction::CheckUpdate);
+            return;
+
+        case Hot::ConfigUpdateNotes:
+            m_modal = Modal::UpdateNotes;
+            ::InvalidateRect(m_window, nullptr, FALSE);
             return;
 
         case Hot::ConfigResetHotkeys:

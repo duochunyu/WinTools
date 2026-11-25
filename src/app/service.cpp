@@ -4,8 +4,11 @@
 #include <shellapi.h>
 
 #include <algorithm>
+#include <array>
 #include <filesystem>
 #include <format>
+#include <optional>
+#include <string_view>
 #include <system_error>
 #include <utility>
 
@@ -13,13 +16,20 @@
 #include "app/capture.h"
 #include "app/features.h"
 #include "app/startup.h"
+#include "app/updater.h"
 #include "core/desktop_wallpaper.h"
 #include "core/layout_math.h"
+#include "core/update_download.h"
+#include "core/update_snapshot.h"
 #include "core/note_theme.h"
 #include "core/wallpaper_store.h"
+#include "platform/win/hash.h"
+#include "platform/win/http.h"
 #include "util/i18n.h"
 #include "util/log.h"
 #include "util/path.h"
+#include "util/text.h"
+#include "util/version.h"
 
 namespace wintools::app
 {
@@ -44,6 +54,7 @@ enum MenuId : UINT
     kMenuCanvas,
     kMenuNewNote,
     kMenuShowNotes,
+    kMenuCheckUpdate,
     kMenuQuit,
 };
 
@@ -53,6 +64,85 @@ std::wstring NowLabel()
     SYSTEMTIME time{};
     ::GetLocalTime(&time);
     return std::format(L"{:02}-{:02} {:02}:{:02}", time.wMonth, time.wDay, time.wHour, time.wMinute);
+}
+
+constexpr DWORD kUpdateStartDelayMs = 30'000;
+constexpr DWORD kUpdateIntervalMs = 6u * 60u * 60u * 1000u;
+
+/// "2026-11-25 14:03" in local time. Written as a sortable, human-readable label: the config
+/// file stays hand-editable, and the same string is what the panel shows as "last checked".
+std::wstring UpdateTimeLabel()
+{
+    SYSTEMTIME now{};
+    ::GetLocalTime(&now);
+    return std::format(L"{:04}-{:02}-{:02} {:02}:{:02}", now.wYear, now.wMonth, now.wDay,
+        now.wHour, now.wMinute);
+}
+
+/// Milliseconds left before an opt-in check is due, or empty when it is due now. A damaged or
+/// hand-edited label counts as due: the timer must never be able to stall forever on bad input.
+std::optional<DWORD> UpdateDelayMs(std::wstring_view label)
+{
+    if (label.size() != 16 || label[4] != L'-' || label[7] != L'-' || label[10] != L' '
+        || label[13] != L':')
+    {
+        return std::nullopt;
+    }
+
+    const auto digits = [&label](size_t at, int count, WORD& value) {
+        int parsed = 0;
+        for (int index = 0; index < count; ++index)
+        {
+            const wchar_t c = label[at + static_cast<size_t>(index)];
+            if (c < L'0' || c > L'9')
+            {
+                return false;
+            }
+            parsed = parsed * 10 + (c - L'0');
+        }
+        value = static_cast<WORD>(parsed);
+        return true;
+    };
+
+    SYSTEMTIME then{};
+    if (!digits(0, 4, then.wYear) || !digits(5, 2, then.wMonth)
+        || !digits(8, 2, then.wDay) || !digits(11, 2, then.wHour)
+        || !digits(14, 2, then.wMinute))
+    {
+        return std::nullopt;
+    }
+    then.wSecond = 0;
+    then.wMilliseconds = 0;
+
+    SYSTEMTIME now{};
+    ::GetLocalTime(&now);
+
+    // Both sides are local SYSTEMTIMEs, so converting them with the same API gives a correct
+    // difference even though SystemTimeToFileTime does not apply the time zone.
+    FILETIME thenFile{}, nowFile{};
+    if (::SystemTimeToFileTime(&then, &thenFile) == FALSE
+        || ::SystemTimeToFileTime(&now, &nowFile) == FALSE)
+    {
+        return std::nullopt;
+    }
+
+    ULARGE_INTEGER start{};
+    start.LowPart = thenFile.dwLowDateTime;
+    start.HighPart = thenFile.dwHighDateTime;
+    ULARGE_INTEGER end{};
+    end.LowPart = nowFile.dwLowDateTime;
+    end.HighPart = nowFile.dwHighDateTime;
+    if (end.QuadPart <= start.QuadPart)
+    {
+        return kUpdateIntervalMs;
+    }
+
+    const ULONGLONG elapsedMs = (end.QuadPart - start.QuadPart) / 10'000ULL;
+    if (elapsedMs >= kUpdateIntervalMs)
+    {
+        return std::nullopt;
+    }
+    return static_cast<DWORD>(kUpdateIntervalMs - elapsedMs);
 }
 
 /// Two member lists with the same displays, in any order.
@@ -155,6 +245,13 @@ Service::Service(HINSTANCE instance, HICON icon)
 
 Service::~Service()
 {
+    // Both workers hold `this` and post to the host window, so neither may outlive the state it
+    // writes. Join them before tearing anything else down.
+    if (m_updateWorker.joinable())
+    {
+        m_updateWorker.join();
+    }
+
     // The watcher can fire into a half-destroyed object, so it goes first - and the worker has to
     // be joined before any of the state it reads disappears.
     m_watcher.reset();
@@ -290,6 +387,9 @@ bool Service::Start(bool showPanel)
         m_panel.ShowPanel();
     }
 
+    // The opt-in check starts 30 seconds in, so startup never waits on the network. The timer
+    // also carries the six-hour repeat; turning the setting off cancels it.
+    ScheduleUpdateCheck();
     return true;
 }
 
@@ -362,6 +462,10 @@ LRESULT Service::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam)
 
         case kWorkDone:
             FinishWork();
+            return 0;
+
+        case kUpdateDone:
+            FinishUpdateCheck();
             return 0;
 
         case WM_HOTKEY:
@@ -455,6 +559,12 @@ LRESULT Service::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam)
                     m_notes.ShowAll();
                     return 0;
 
+                case kMenuCheckUpdate:
+                    HandleAction(PanelRequest{ m_updateFeed.has_value()
+                            ? PanelAction::ShowUpdateNotes
+                            : PanelAction::CheckUpdate });
+                    return 0;
+
                 case kMenuQuit:
                     HandleAction(PanelRequest{ PanelAction::Quit });
                     return 0;
@@ -474,6 +584,13 @@ LRESULT Service::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam)
             {
                 ::KillTimer(m_window, kRetryTimerId);
                 OnDisplaysSettled(true);
+                return 0;
+            }
+            if (wparam == kUpdateCheckTimerId)
+            {
+                ::KillTimer(m_window, kUpdateCheckTimerId);
+                // Re-arming happens in FinishUpdateCheck, after lastUpdateCheck is written.
+                BeginUpdateCheck(false);
                 return 0;
             }
             break;
@@ -514,6 +631,10 @@ void Service::ShowTrayMenu()
     }
     ::AppendMenuW(menu, MF_STRING, kMenuNewNote, util::i18n::Cstr(L"新建便签"));
     ::AppendMenuW(menu, MF_STRING, kMenuShowNotes, util::i18n::Cstr(L"显示所有便签"));
+
+    ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    ::AppendMenuW(menu, MF_STRING, kMenuCheckUpdate,
+        util::i18n::Cstr(m_updateFeed.has_value() ? L"有新版本 · 查看说明" : L"检查更新"));
 
     ::AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     ::AppendMenuW(menu, MF_STRING, kMenuQuit, util::i18n::Cstr(L"退出"));
@@ -679,6 +800,172 @@ void Service::FinishWork()
 
     m_clearDirtyOnSuccess = false;
     SetStatus(m_workResult.message, !m_workResult.ok);
+
+    if (m_pendingInstall)
+    {
+        m_pendingInstall = false;
+        if (m_workResult.ok && !m_downloadedUpdate.empty())
+        {
+            BeginSelfUpdate();
+        }
+    }
+}
+
+void Service::ScheduleUpdateCheck()
+{
+    if (m_window == nullptr)
+    {
+        return;
+    }
+
+    ::KillTimer(m_window, kUpdateCheckTimerId);
+    if (!m_settings.autoCheckUpdate)
+    {
+        return;
+    }
+
+    DWORD delay = kUpdateStartDelayMs;
+    if (const auto remaining = UpdateDelayMs(m_settings.lastUpdateCheck); remaining.has_value())
+    {
+        delay = std::clamp(*remaining, static_cast<DWORD>(1000), kUpdateIntervalMs);
+    }
+    ::SetTimer(m_window, kUpdateCheckTimerId, delay, nullptr);
+}
+
+void Service::BeginUpdateCheck(bool manual)
+{
+    if (m_updateChecking || m_window == nullptr)
+    {
+        return;
+    }
+
+    const auto current = core::AppVersion::Parse(std::wstring{ wintools::kVersion });
+    if (!current.has_value())
+    {
+        util::LogError(L"cannot compare against the compiled version {}",
+            std::wstring_view{ wintools::kVersion });
+        if (manual)
+        {
+            SetStatus(util::i18n::Format(L"检查更新失败：{}", wintools::kVersion), true);
+        }
+        return;
+    }
+
+    if (m_updateWorker.joinable())
+    {
+        m_updateWorker.join();
+    }
+
+    m_updateChecking = true;
+    m_updateCheckManual = manual;
+    m_updateResult = UpdateWorkerResult{};
+
+    // Everything the worker touches is copied in: m_settings is owned by the UI thread and may
+    // be saved while a fetch is in flight.
+    const std::wstring source = m_settings.updateSource;
+    m_updateWorker = std::thread([this, source, current]() {
+        UpdateWorkerResult result;
+        const core::UpdateCheck check = core::CheckForUpdate(
+            [](std::wstring_view url, std::string& body) {
+                const auto response = platform::win::HttpGetText(url);
+                if (!response.ok)
+                {
+                    util::LogWarn(L"update source {} unavailable: {}", url, response.error);
+                    return false;
+                }
+                body = response.body;
+                return true;
+            },
+            source, *current);
+
+        result.ok = !check.error;
+        result.message = check.message;
+        result.feed = check.feed;
+        m_updateResult = std::move(result);
+        ::PostMessageW(m_window, kUpdateDone, 0, 0);
+    });
+}
+
+void Service::FinishUpdateCheck()
+{
+    if (m_updateWorker.joinable())
+    {
+        m_updateWorker.join();
+    }
+    m_updateChecking = false;
+
+    // Record the attempt, not just a success: a source that is down must not turn into a
+    // request on every timer tick.
+    m_settings.lastUpdateCheck = UpdateTimeLabel();
+    (void)m_settings.Save();
+
+    m_updateFeed.reset();
+    if (m_updateResult.ok && m_updateResult.feed.has_value())
+    {
+        m_updateFeed = m_updateResult.feed;
+        m_updateDismissed = false;
+
+        const std::wstring available = m_updateFeed->version.Text();
+        SetStatus(util::i18n::Format(L"有新版本 {}", available));
+
+        if (m_panel.Handle() != nullptr && !::IsWindowVisible(m_panel.Handle()))
+        {
+            m_tray.ShowInfo(L"WinTools",
+                util::i18n::Text(util::i18n::Format(L"有新版本 {}", available)));
+        }
+    }
+    else if (m_updateCheckManual)
+    {
+        SetStatus(m_updateResult.ok
+                ? std::wstring{ util::i18n::Cstr(L"当前已是最新版本") }
+                : util::i18n::Format(L"检查更新失败：{}", m_updateResult.message),
+            !m_updateResult.ok);
+    }
+    else if (!m_updateResult.ok)
+    {
+        // An opt-in background check must stay quiet. The worker already logged each source.
+        util::LogWarn(L"background update check failed: {}", m_updateResult.message);
+    }
+
+    m_panel.Refresh();
+    ScheduleUpdateCheck();
+}
+
+void Service::BeginSelfUpdate()
+{
+    // Flush open notes first: the snapshot below is the rollback point, and it has to contain
+    // what the user typed, not what happened to be on disk when the download started.
+    m_notes.SaveAll();
+
+    std::wstring error;
+    if (!core::SnapshotBeforeUpdate(util::AppDataFolder(), wintools::kVersion, error))
+    {
+        LogError(L"update snapshot failed: {}", error);
+        SetStatus(util::i18n::Format(L"更新准备失败：{}", error), true);
+        return;
+    }
+
+    std::array<wchar_t, 32768> buffer{};
+    const DWORD length = ::GetModuleFileNameW(nullptr, buffer.data(),
+        static_cast<DWORD>(buffer.size()));
+    if (length == 0 || length >= buffer.size())
+    {
+        SetStatus(util::i18n::Format(L"更新准备失败：{}", L"cannot locate the running exe"), true);
+        return;
+    }
+    const std::filesystem::path target{ std::wstring{ buffer.data(), length } };
+
+    SetStatus(util::i18n::Cstr(L"正在更新…"));
+    if (!StartUpdaterProcess(target, m_downloadedUpdate, ::GetCurrentProcessId(), error))
+    {
+        LogError(L"cannot start the updater: {}", error);
+        SetStatus(util::i18n::Format(L"无法启动更新程序：{}", error), true);
+        return;
+    }
+
+    // The updater waits on this process before touching the exe. A normal quit is what releases
+    // the file lock and also saves every remaining piece of state.
+    ::PostQuitMessage(0);
 }
 
 bool Service::DarkTheme() const
@@ -1188,6 +1475,63 @@ void Service::HandleAction(const PanelRequest& request)
             RegisterHotkeys();
             return;
 
+        case PanelAction::ToggleAutoCheck:
+            m_settings.autoCheckUpdate = !m_settings.autoCheckUpdate;
+            (void)m_settings.Save();
+            ScheduleUpdateCheck();
+            SetStatus(util::i18n::Cstr(m_settings.autoCheckUpdate
+                    ? L"自动检查更新已开"
+                    : L"自动检查更新已关"));
+            return;
+
+        case PanelAction::CheckUpdate:
+            BeginUpdateCheck(true);
+            return;
+
+        case PanelAction::ShowUpdateNotes:
+            m_panel.ShowUpdateNotes();
+            return;
+
+        case PanelAction::InstallUpdate:
+        {
+            if (!m_updateFeed.has_value())
+            {
+                SetStatus(util::i18n::Cstr(L"没有可用的更新包"), true);
+                return;
+            }
+
+            const core::UpdateFeed feed = *m_updateFeed;
+            const std::filesystem::path target = core::UpdateFilePath(feed);
+            m_downloadedUpdate.clear();
+            m_pendingInstall = true;
+
+            BeginWork(util::i18n::Cstr(L"下载中…"), [this, feed, target]() {
+                const auto fetch = [](std::wstring_view url, const std::filesystem::path& path,
+                                       std::string& error) {
+                    const auto outcome = platform::win::HttpDownloadToFile(url, path);
+                    if (!outcome.ok)
+                    {
+                        error = util::ToUtf8(outcome.error);
+                        return false;
+                    }
+                    return true;
+                };
+                const auto hash = [](const std::filesystem::path& path, std::string& hex) {
+                    return platform::win::Sha256File(path, hex);
+                };
+
+                const auto result = core::DownloadUpdate(fetch, hash, feed, target);
+                if (result.ok)
+                {
+                    m_downloadedUpdate = target;
+                }
+                return ActionResult{ result.ok,
+                    result.ok ? util::i18n::Format(L"更新包已下载并校验")
+                              : util::i18n::Format(L"下载更新失败：{}", result.message) };
+            }, false);
+            return;
+        }
+
         case PanelAction::Quit:
             m_notes.SaveAll();
             ::PostQuitMessage(0);
@@ -1369,6 +1713,17 @@ PanelState Service::ReadState()
         { return left.starred && !right.starred; });
     state.hotkeys = m_settings.hotkeys;
     state.snapshotAt = SavedLayoutTimestamp();
+
+    state.autoCheckUpdate = m_settings.autoCheckUpdate;
+    state.lastUpdateCheck = m_settings.lastUpdateCheck;
+    if (m_updateFeed.has_value())
+    {
+        state.updateAvailableVersion = m_updateFeed->version.Text();
+        state.updateNotesZh = m_updateFeed->notesZh;
+        state.updateNotesEn = m_updateFeed->notesEn;
+        state.updateSize = m_updateFeed->size;
+        state.updateSha256 = m_updateFeed->sha256;
+    }
 
     if (const auto saved = LoadSavedLayout(); saved.has_value())
     {

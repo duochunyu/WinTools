@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -18,6 +19,7 @@
 #include "core/canvas.h"
 #include "core/display_watcher.h"
 #include "core/group.h"
+#include "core/update_check.h"
 
 namespace wintools::app
 {
@@ -51,6 +53,12 @@ private:
 
     /// Posted by the worker thread when the long action it was given has finished.
     static constexpr UINT kWorkDone = WM_APP + 4;
+
+    /// The update feed fetch has its own completion message: unlike wallpaper work it must not
+    /// put the panel into its busy state, and a check can run while a render is in flight.
+    static constexpr UINT kUpdateDone = WM_APP + 5;
+
+    static constexpr UINT_PTR kUpdateCheckTimerId = 4;
 
     /// One-shot timer that gives a display stack which is still coming up a second chance.
     static constexpr UINT_PTR kRetryTimerId = 3;
@@ -94,6 +102,15 @@ private:
     void BeginWork(std::wstring label, std::function<ActionResult()> work, bool clearDirty);
     void FinishWork();
 
+    /// Opt-in check: armed at startup and again after every attempt, never when the user turned
+    /// it off. A manual check ignores the interval and runs even with the opt-in off.
+    void ScheduleUpdateCheck();
+    void BeginUpdateCheck(bool manual);
+    void FinishUpdateCheck();
+
+    /// Snapshots user data, hands the verified package to the temp-process updater, then quits.
+    void BeginSelfUpdate();
+
     void SetStatus(std::wstring text, bool isError = false);
     void SyncTrayTooltip();
 
@@ -131,6 +148,25 @@ private:
 
     WorkResult m_workResult{};
     std::thread m_worker;
+
+    struct UpdateWorkerResult
+    {
+        bool ok{};
+        std::wstring message;
+        std::optional<core::UpdateFeed> feed;
+    };
+
+    bool m_updateChecking{};
+    /// Set when the current BeginWork is a download whose success should trigger the swap.
+    bool m_pendingInstall{};
+    bool m_updateCheckManual{};
+    /// Set by "Later": the tray balloon is a one-shot per discovered version.
+    bool m_updateDismissed{};
+    UpdateWorkerResult m_updateResult;
+    std::optional<core::UpdateFeed> m_updateFeed;
+    /// Verified `.new` file from the last successful download, ready for M9.5's self-replacement.
+    std::filesystem::path m_downloadedUpdate;
+    std::thread m_updateWorker;
 
     Panel m_panel;
     TrayIcon m_tray;

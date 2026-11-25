@@ -4,6 +4,7 @@
 #include <fstream>
 #include <system_error>
 
+#include "util/file.h"
 #include "util/log.h"
 #include "util/text.h"
 
@@ -32,13 +33,6 @@ bool WallpaperState::Save(const std::filesystem::path& file) const
         }
     }
 
-    std::ofstream out(file, std::ios::binary | std::ios::trunc);
-    if (!out)
-    {
-        util::LogError(L"cannot open '{}' for writing", file.wstring());
-        return false;
-    }
-
     // devicePath contains no tabs and no newlines, so tab-separated lines are unambiguous.
     std::wstring text;
     text += std::format(L"{}{}\n", kKeyPosition, static_cast<int>(position));
@@ -48,17 +42,7 @@ bool WallpaperState::Save(const std::filesystem::path& file) const
         text += std::format(L"{}{}\t{}\n", kKeyMonitor, devicePath, image);
     }
 
-    const std::string utf8 = util::ToUtf8(text);
-    out.write(utf8.data(), static_cast<std::streamsize>(utf8.size()));
-    out.flush();
-
-    if (!out)
-    {
-        util::LogError(L"cannot write '{}'", file.wstring());
-        return false;
-    }
-
-    return true;
+    return util::AtomicWrite(file, text);
 }
 
 std::optional<WallpaperState> WallpaperState::Load(const std::filesystem::path& file)

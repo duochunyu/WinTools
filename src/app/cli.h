@@ -10,6 +10,8 @@ namespace wintools::app
 enum class Command
 {
     Help,
+    Version,
+    CheckUpdate,
     Monitors,
     Dump,
     Span,
@@ -26,6 +28,8 @@ struct Options
     Command command{ Command::Help };
     std::filesystem::path image;
     bool dryRun{};
+    /// --source for --check-update: lets the check be exercised against a local feed.
+    std::wstring source;
 
     /// Only meaningful for Tray: whether to put the panel on screen at startup. The autostart
     /// entry passes --tray so a login launch stays in the background.

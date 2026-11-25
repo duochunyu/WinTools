@@ -1,7 +1,7 @@
 # WinTools
 
 **A multi-monitor toolbox for Windows** — one executable for wallpapers, windows and notes.
-No installer, no network access.
+No installer; no network access unless you opt in to update checks.
 
 ![Four-page panel](docs/panel-demo-en.gif)
 
@@ -11,6 +11,7 @@ No installer, no network access.
 - **Window layout memory**: after a display sleeps or reconnects, windows return where they were.
 - **Sticky notes on top**: five paper colours, stars, pasted screenshots, restored on restart.
 - **Area screenshot**: one shortcut, drag a box; paste it anywhere, or straight into a note.
+- **Optional updates**: off by default; read the release notes first, then install in one click.
 - **Desktop widgets**: the calendar and friends are being polished; more to come.
 
 ![Sticky note](docs/note-card-en.png)
