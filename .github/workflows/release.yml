@@ -381,4 +381,9 @@ jobs:
             exit 0
           }
           git remote add gitee "https://oauth2:$env:GITEE_TOKEN@gitee.com/YingKeWangLuo_admin/main.git"
-          git push gitee HEAD:main
+          # --force because the GitHub repository is authoritative and the mirror is a copy of it.
+          # The mirror can legitimately be ahead in one case: its feed is published by hand until
+          # GITEE_TOKEN exists as a secret (v0.3.2 was), which leaves a commit on the mirror that
+          # GitHub has never seen. Without --force every later release would be rejected as a
+          # non-fast-forward and the mirror would stop updating for good.
+          git push --force gitee HEAD:main
