@@ -66,6 +66,27 @@ WINTOOLS_TEST(Check_EqualVersionIsNotAnUpdate)
 
     CHECK(!result.available);
     CHECK(!result.error);
+    // A present feed is how the panel decides to offer an install, so an up-to-date check must
+    // not hand one back. Missing this assertion is what let 0.3.0 offer to update to 0.3.0.
+    CHECK(!result.feed.has_value());
+}
+
+WINTOOLS_TEST(Check_OlderVersionIsNotAnUpdate)
+{
+    const auto current = AppVersion::Parse(L"0.3.0");
+    CHECK(current.has_value());
+
+    const auto result = CheckForUpdate(
+        [](std::wstring_view, std::string& body)
+        {
+            body = Feed(L"0.2.9");
+            return true;
+        },
+        L"", *current);
+
+    CHECK(!result.available);
+    CHECK(!result.error);
+    CHECK(!result.feed.has_value());
 }
 
 WINTOOLS_TEST(Check_FallsBackWhenFirstSourceFails)

@@ -57,13 +57,16 @@ UpdateCheck CheckForUpdate(
             continue;
         }
 
-        result.feed = feed;
         if (Compare(feed->version, current) <= 0)
         {
+            // No feed in the result: `feed` means "the update to apply", and callers key their
+            // "an update is available" UI off its presence. Handing back the feed of a version
+            // the user already runs is what made the panel offer 0.3.0 -> 0.3.0.
             result.message = L"已是最新版本";
             return result;
         }
 
+        result.feed = feed;
         result.available = true;
         result.message = std::format(L"有新版本 {}", feed->version.Text());
         return result;

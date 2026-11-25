@@ -16,6 +16,10 @@ using FetchText = std::function<bool(std::wstring_view url, std::string& body)>;
 
 /// The result of one update check. `available` is false both when there is no newer version and
 /// when the check failed; `message` and `error` tell them apart.
+///
+/// `feed` is only set when `available` is true: it means "the update to apply", not "the feed we
+/// managed to parse". Callers treat a present feed as "there is something to install", so an
+/// up-to-date check must not leave one behind.
 struct UpdateCheck
 {
     bool available{};
