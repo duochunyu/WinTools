@@ -48,6 +48,17 @@ jobs:
         shell: cmd
         run: scripts\build.bat windows-x64-release
 
+      # Built here rather than earlier because the suite links the same core objects as the app:
+      # running it against the release build is what proves the configuration being shipped.
+      # The test binary returns 1 when anything fails, so this gates the release.
+      - name: Run unit tests
+        shell: pwsh
+        run: |
+          $tests = 'build/release/bin/wintools_tests.exe'
+          if (-not (Test-Path $tests)) { throw "test binary missing: $tests" }
+          & $tests
+          if ($LASTEXITCODE -ne 0) { throw "unit tests failed with exit code $LASTEXITCODE" }
+
       # The Gitee mirror is part of the design but not a hard requirement: a release that publishes
       # to GitHub still works, because the updater falls back to the GitHub URLs in the feed. So an
       # absent token means "mirror not configured" and skips the Gitee steps; a token that is
