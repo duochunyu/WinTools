@@ -32,6 +32,60 @@ WINTOOLS_TEST(Sources_CustomComesFirstAndDefaultsFollow)
     CHECK(sources[2].find(L"githubusercontent.com") != std::wstring::npos);
 }
 
+WINTOOLS_TEST(Sources_PreferredComesRightAfterCustom)
+{
+    const auto sources = SourcesFor(L"http://localhost/feed.txt", L"http://mirror.example/update.txt");
+    CHECK_EQ(sources.size(), 4u);
+    CHECK_EQ(sources[0], std::wstring(L"http://localhost/feed.txt"));
+    CHECK_EQ(sources[1], std::wstring(L"http://mirror.example/update.txt"));
+    CHECK(sources[2].find(L"gitee.com") != std::wstring::npos);
+}
+
+WINTOOLS_TEST(Sources_PreferredBuiltInIsNotDuplicated)
+{
+    // The learned source is normally one of the two built-ins; it must not appear twice or the
+    // client would fetch the same feed again before falling back.
+    const auto plain = SourcesFor(L"");
+    const auto learned = SourcesFor(L"", plain.front());
+    CHECK_EQ(learned.size(), plain.size());
+    CHECK_EQ(learned.front(), plain.front());
+}
+
+WINTOOLS_TEST(Check_RemembersTheSourceThatAnswered)
+{
+    const auto current = AppVersion::Parse(L"0.3.0");
+    CHECK(current.has_value());
+
+    const auto result = CheckForUpdate(
+        [](std::wstring_view, std::string& body)
+        {
+            body = Feed(L"0.3.0");
+            return true;
+        },
+        L"http://localhost/custom", *current);
+
+    CHECK_EQ(result.source, std::wstring(L"http://localhost/custom"));
+}
+
+WINTOOLS_TEST(Check_TriesThePreferredSourceFirst)
+{
+    const auto current = AppVersion::Parse(L"0.3.0");
+    CHECK(current.has_value());
+    std::vector<std::wstring> tried;
+
+    (void)CheckForUpdate(
+        [&tried](std::wstring_view url, std::string& body)
+        {
+            tried.emplace_back(url);
+            body = Feed(L"0.3.0");
+            return true;
+        },
+        L"", *current, L"http://mirror.example/update.txt");
+
+    CHECK(!tried.empty());
+    CHECK_EQ(tried.front(), std::wstring(L"http://mirror.example/update.txt"));
+}
+
 WINTOOLS_TEST(Check_ReportsNewerVersion)
 {
     const auto current = AppVersion::Parse(L"0.2.0");

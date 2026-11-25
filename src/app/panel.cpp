@@ -2428,10 +2428,22 @@ Panel::Geometry Panel::ComputeGeometry() const
             // and a row laid out past the footer would be neither drawn nor clickable.
             heading(L"更新");
             toggle(L"自动检查更新", Hot::ConfigAutoCheck, m_state.autoCheckUpdate);
-            link(m_state.updateAvailableVersion.empty() ? std::wstring{ L"检查更新" }
-                                                        : util::i18n::Format(L"有新版本 {}",
-                                                              m_state.updateAvailableVersion),
-                Hot::ConfigCheckUpdate);
+            // The row says a check is running right where it was clicked: the footer is a long way
+            // off, and on an up-to-date machine "already up to date" is the only thing that ever
+            // changes, which reads as a dead link.
+            {
+                std::wstring updateLabel{ L"检查更新" };
+                if (!m_state.updateAvailableVersion.empty())
+                {
+                    updateLabel =
+                        util::i18n::Format(L"有新版本 {}", m_state.updateAvailableVersion);
+                }
+                if (m_state.updateChecking)
+                {
+                    updateLabel = L"检查中…";
+                }
+                link(std::move(updateLabel), Hot::ConfigCheckUpdate);
+            }
             if (!m_state.updateAvailableVersion.empty())
             {
                 link(L"查看更新说明", Hot::ConfigUpdateNotes);
@@ -4490,8 +4502,12 @@ void Panel::PaintFooter(HDC dc, const Geometry& geometry)
             geometry.footer.top + 1 },
         t.line);
 
+    // An update check is not a work item, but it needs the same cue: the footer is the only place
+    // that can say "something is happening" while the answer is still in flight.
+    const bool working = m_state.busy || m_state.updateChecking;
+
     COLORREF dot = t.ok;
-    if (m_state.busy)
+    if (working)
     {
         dot = t.warn;
     }
@@ -4500,16 +4516,23 @@ void Panel::PaintFooter(HDC dc, const Geometry& geometry)
         dot = t.danger;
     }
 
-    if (!m_state.status.empty() || m_state.busy)
+    if (!m_state.status.empty() || working)
     {
         FillRounded(dc, geometry.statusDot, 3, dot);
     }
 
-    DrawTextBlock(dc, m_fontAux, m_state.statusIsError ? t.danger : t.text3, geometry.statusText,
-        m_state.busy
-            ? util::i18n::Format(L"正在处理… {}", util::i18n::Text(m_state.busyLabel))
-            : m_state.status,
-        DT_LEFT | DT_END_ELLIPSIS);
+    std::wstring line = m_state.status;
+    if (m_state.busy)
+    {
+        line = util::i18n::Format(L"正在处理… {}", util::i18n::Text(m_state.busyLabel));
+    }
+    else if (m_state.updateChecking)
+    {
+        line = util::i18n::Cstr(L"正在检查更新…");
+    }
+
+    DrawTextBlock(dc, m_fontAux, !working && m_state.statusIsError ? t.danger : t.text3,
+        geometry.statusText, line, DT_LEFT | DT_END_ELLIPSIS);
 
     DrawButton(dc, m_measure, t, m_fontBody, geometry.quit, L"退出", false, m_hot == Hot::Quit,
         m_pressed == Hot::Quit, false, false, m_spinAngle);

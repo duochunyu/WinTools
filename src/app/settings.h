@@ -83,6 +83,10 @@ struct Settings
     /// Extra feed URL tried before the built-in Gitee/GitHub sources. Empty uses the defaults.
     std::wstring updateSource;
 
+    /// The feed that answered the last check. Tried before the built-in list so a machine that
+    /// can only reach GitHub does not pay the Gitee timeout on every single check.
+    std::wstring updateLastGoodSource;
+
     /// When the last check ran, as display text. Purely informational, like lastAutoRestore.
     std::wstring lastUpdateCheck;
 

@@ -43,6 +43,7 @@ constexpr wchar_t kKeyCanvasSize[] = L"canvas.size=";
 constexpr wchar_t kKeyCanvasSweep[] = L"canvas.sweep=";
 constexpr wchar_t kKeyAutoCheckUpdate[] = L"update.autoCheck=";
 constexpr wchar_t kKeyUpdateSource[] = L"update.source=";
+constexpr wchar_t kKeyUpdateLastGoodSource[] = L"update.lastGoodSource=";
 constexpr wchar_t kKeyLastUpdateCheck[] = L"update.lastCheck=";
 /// One line per shortcut. The names are spelled out rather than numbered so the file stays
 /// legible, and the first two are the names older files already carry - a binding saved by an
@@ -274,6 +275,10 @@ Settings Settings::Load()
         {
             settings.updateSource = value;
         }
+        else if (key == kKeyUpdateLastGoodSource)
+        {
+            settings.updateLastGoodSource = value;
+        }
         else if (key == kKeyLastUpdateCheck)
         {
             settings.lastUpdateCheck = value;
@@ -354,6 +359,7 @@ bool Settings::Save() const
     text += std::format(L"{}{}\n", kKeyCanvasSweep, canvasSweep ? 1 : 0);
     text += std::format(L"{}{}\n", kKeyAutoCheckUpdate, autoCheckUpdate ? 1 : 0);
     text += std::format(L"{}{}\n", kKeyUpdateSource, updateSource);
+    text += std::format(L"{}{}\n", kKeyUpdateLastGoodSource, updateLastGoodSource);
     text += std::format(L"{}{}\n", kKeyLastUpdateCheck, lastUpdateCheck);
     for (const HotkeyKey& entry : kHotkeyKeys)
     {

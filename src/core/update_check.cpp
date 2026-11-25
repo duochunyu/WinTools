@@ -17,26 +17,43 @@ constexpr std::wstring_view kGithubFeed =
 
 } // namespace
 
-std::vector<std::wstring> SourcesFor(std::wstring_view custom)
+std::vector<std::wstring> SourcesFor(std::wstring_view custom, std::wstring_view preferred)
 {
     std::vector<std::wstring> sources;
-    if (!custom.empty())
+    const auto add = [&sources](std::wstring_view url)
     {
-        sources.emplace_back(custom);
-    }
-    sources.emplace_back(kGiteeFeed);
-    sources.emplace_back(kGithubFeed);
+        if (url.empty())
+        {
+            return;
+        }
+        for (const std::wstring& existing : sources)
+        {
+            if (existing == url)
+            {
+                return;
+            }
+        }
+        sources.emplace_back(url);
+    };
+
+    // Custom first: it is an explicit instruction from the user. Preferred next: it is where the
+    // last check succeeded, which is what keeps a GitHub-side client off the Gitee timeout.
+    add(custom);
+    add(preferred);
+    add(kGiteeFeed);
+    add(kGithubFeed);
     return sources;
 }
 
 UpdateCheck CheckForUpdate(
-    const FetchText& fetch, std::wstring_view customSource, const AppVersion& current)
+    const FetchText& fetch, std::wstring_view customSource, const AppVersion& current,
+    std::wstring_view preferred)
 {
     UpdateCheck result;
     // Whether any source produced a feed at all: tells "everything said up to date" apart from
     // "nothing answered", which is the difference between a quiet success and a visible error.
     bool reachedASource = false;
-    for (const std::wstring& source : SourcesFor(customSource))
+    for (const std::wstring& source : SourcesFor(customSource, preferred))
     {
         std::string body;
         bool fetched = false;
@@ -61,6 +78,14 @@ UpdateCheck CheckForUpdate(
         }
 
         reachedASource = true;
+        if (result.source.empty())
+        {
+            // First source that answered, not the one that eventually won a version comparison:
+            // the caller stores this to start the next check here, and starting from a mirror
+            // that is merely one release behind is still better than starting from one that is
+            // unreachable.
+            result.source = source;
+        }
         if (Compare(feed->version, current) <= 0)
         {
             // A mirror can lag the primary by a release or more, and this list is ordered

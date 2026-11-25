@@ -220,6 +220,11 @@ struct PanelState
     bool busy{};
     std::wstring busyLabel;
 
+    /// An update check is in flight. Kept apart from busy: a check has no work item behind it, and
+    /// it needs a cue of its own or a check that ends on "already up to date" looks like a dead
+    /// link - the status line does not change, so nothing on screen moves.
+    bool updateChecking{};
+
     /// The most recent status line, shown in the shared footer on every page.
     std::wstring status;
     bool statusIsError{};

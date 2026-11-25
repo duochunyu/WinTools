@@ -227,6 +227,7 @@ const std::unordered_map<std::wstring_view, std::wstring_view>& Table()
         { L"正在处理… ", L"Working... " },
         { L"正在处理… {}", L"Working... {}" },
         { L"正在更新…", L"Updating..." },
+        { L"正在检查更新…", L"Checking for updates..." },
         { L"没有任何组合带图片，未修改壁纸", L"No group has an image; wallpaper unchanged" },
         { L"没有保存过原壁纸，无法还原", L"No original wallpaper was saved; nothing to restore" },
         { L"没有可以移动的屏", L"No display can be moved" },

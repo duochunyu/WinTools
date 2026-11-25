@@ -154,6 +154,8 @@ private:
         bool ok{};
         std::wstring message;
         std::optional<core::UpdateFeed> feed;
+        /// Which source answered, so the next check can start there.
+        std::wstring source;
     };
 
     bool m_updateChecking{};

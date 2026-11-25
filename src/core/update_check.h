@@ -26,12 +26,19 @@ struct UpdateCheck
     bool error{};
     std::wstring message;
     std::optional<UpdateFeed> feed;
+    /// The first source that produced a usable feed, empty when none answered. Callers persist it
+    /// as the preferred source so the next check starts where this one succeeded.
+    std::wstring source;
 };
 
-/// Sources are tried in order. An empty custom source means "use the built-in list": Gitee first
-/// for mainland users, GitHub as the fallback. The list itself lives here rather than in the
-/// feed so a compromised feed cannot redirect the client to an arbitrary mirror.
-[[nodiscard]] std::vector<std::wstring> SourcesFor(std::wstring_view custom);
+/// Sources are tried in order. `custom` is an explicit user override and always goes first;
+/// `preferred` — the source that worked last time on this machine — goes next, so a client that
+/// has to fall back to GitHub stops paying the Gitee timeout on every single check. Both are
+/// deduplicated against the built-in list: Gitee first for mainland users, GitHub as the
+/// fallback. The list itself lives here rather than in the feed so a compromised feed cannot
+/// redirect the client to an arbitrary mirror.
+[[nodiscard]] std::vector<std::wstring> SourcesFor(
+    std::wstring_view custom, std::wstring_view preferred = {});
 
 /// Pure orchestration: fetch each source, parse the feed, compare against the current version.
 /// The caller injects the transport, so unit tests can feed hostile or offline responses without
@@ -41,6 +48,7 @@ struct UpdateCheck
 /// ordered mirror-first, so a stale mirror must not be able to hide a release another source
 /// already publishes. "Up to date" is only reported after every source has said so.
 [[nodiscard]] UpdateCheck CheckForUpdate(
-    const FetchText& fetch, std::wstring_view customSource, const AppVersion& current);
+    const FetchText& fetch, std::wstring_view customSource, const AppVersion& current,
+    std::wstring_view preferred = {});
 
 } // namespace wintools::core

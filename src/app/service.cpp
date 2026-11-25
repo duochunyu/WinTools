@@ -860,10 +860,19 @@ void Service::BeginUpdateCheck(bool manual)
     m_updateCheckManual = manual;
     m_updateResult = UpdateWorkerResult{};
 
+    if (manual)
+    {
+        // Pin the click to a line in the log, and repaint at once: the answer takes a network
+        // round trip, and up to a source timeout when one of them is down.
+        util::LogInfo(L"update check started (manual)");
+        m_panel.Refresh();
+    }
+
     // Everything the worker touches is copied in: m_settings is owned by the UI thread and may
     // be saved while a fetch is in flight.
     const std::wstring source = m_settings.updateSource;
-    m_updateWorker = std::thread([this, source, current]() {
+    const std::wstring preferred = m_settings.updateLastGoodSource;
+    m_updateWorker = std::thread([this, source, preferred, current]() {
         UpdateWorkerResult result;
         const core::UpdateCheck check = core::CheckForUpdate(
             [](std::wstring_view url, std::string& body) {
@@ -876,11 +885,12 @@ void Service::BeginUpdateCheck(bool manual)
                 body = response.body;
                 return true;
             },
-            source, *current);
+            source, *current, preferred);
 
         result.ok = !check.error;
         result.message = check.message;
         result.feed = check.feed;
+        result.source = check.source;
         m_updateResult = std::move(result);
         ::PostMessageW(m_window, kUpdateDone, 0, 0);
     });
@@ -897,34 +907,64 @@ void Service::FinishUpdateCheck()
     // Record the attempt, not just a success: a source that is down must not turn into a
     // request on every timer tick.
     m_settings.lastUpdateCheck = UpdateTimeLabel();
+    if (!m_updateResult.source.empty() && m_updateResult.source != m_settings.updateLastGoodSource)
+    {
+        // Learn where this network can actually reach a feed. Without this a client that has to
+        // fall back to GitHub pays the Gitee timeout on every check, forever.
+        util::LogInfo(L"update source remembered: {}", m_updateResult.source);
+        m_settings.updateLastGoodSource = m_updateResult.source;
+    }
     (void)m_settings.Save();
 
     m_updateFeed.reset();
+    std::wstring answer; // what the user is told, and what the tray repeats when the panel is away
+
     if (m_updateResult.ok && m_updateResult.feed.has_value())
     {
         m_updateFeed = m_updateResult.feed;
         m_updateDismissed = false;
 
-        const std::wstring available = m_updateFeed->version.Text();
-        SetStatus(util::i18n::Format(L"有新版本 {}", available));
-
-        if (m_panel.Handle() != nullptr && !::IsWindowVisible(m_panel.Handle()))
-        {
-            m_tray.ShowInfo(L"WinTools",
-                util::i18n::Text(util::i18n::Format(L"有新版本 {}", available)));
-        }
+        answer = util::i18n::Format(L"有新版本 {}", m_updateFeed->version.Text());
+        SetStatus(answer);
     }
     else if (m_updateCheckManual)
     {
-        SetStatus(m_updateResult.ok
-                ? std::wstring{ util::i18n::Cstr(L"当前已是最新版本") }
-                : util::i18n::Format(L"检查更新失败：{}", m_updateResult.message),
-            !m_updateResult.ok);
+        answer = m_updateResult.ok
+            ? std::wstring{ util::i18n::Cstr(L"当前已是最新版本") }
+            : util::i18n::Format(L"检查更新失败：{}", m_updateResult.message);
+        SetStatus(answer, !m_updateResult.ok);
     }
     else if (!m_updateResult.ok)
     {
         // An opt-in background check must stay quiet. The worker already logged each source.
         util::LogWarn(L"background update check failed: {}", m_updateResult.message);
+    }
+
+    // A background check that finds nothing stays silent; one the user asked for does not. With
+    // the panel off screen the footer cannot answer, so the balloon has to - otherwise the tray
+    // menu's "检查更新" looks just as dead as the panel link did.
+    if (!answer.empty() && m_panel.Handle() != nullptr && !::IsWindowVisible(m_panel.Handle()))
+    {
+        m_tray.ShowInfo(L"WinTools", util::i18n::Text(answer));
+    }
+
+    if (m_updateCheckManual)
+    {
+        // Pairs with "started (manual)": between the two lines the log answers the only question a
+        // silent-looking click raises - did it reach the network, or nowhere at all?
+        if (!m_updateResult.ok)
+        {
+            util::LogInfo(L"update check finished (manual): failed - {}", m_updateResult.message);
+        }
+        else if (m_updateFeed.has_value())
+        {
+            util::LogInfo(L"update check finished (manual): new version {}",
+                m_updateFeed->version.Text());
+        }
+        else
+        {
+            util::LogInfo(L"update check finished (manual): already up to date");
+        }
     }
 
     m_panel.Refresh();
@@ -1701,6 +1741,7 @@ PanelState Service::ReadState()
 
     state.busy = m_busy;
     state.busyLabel = m_busyLabel;
+    state.updateChecking = m_updateChecking;
 
     state.status = m_status;
     state.statusIsError = m_statusIsError;
