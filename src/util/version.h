@@ -12,8 +12,9 @@
 namespace wintools
 {
 
-/// The version of the running exe, as "0.2.0". A compile-time fact, never a setting or a file:
-/// auto-update compares this against the feed's version to decide whether to offer an upgrade.
+/// The version of the running exe, as "1.2.3" - whatever project(VERSION) says, never repeated
+/// here. A compile-time fact, never a setting or a file: auto-update compares this against the
+/// feed's version to decide whether to offer an upgrade.
 inline constexpr wchar_t kVersion[] = WINTOOLS_VERSION_STRING;
 
 } // namespace wintools
