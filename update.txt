@@ -1,8 +1,8 @@
 schema=1
-version=0.3.1
-size=1290240
-sha256=4c9915bd2dc4fde380bd9514890159e5bad31bd74748812495713bc9fd998e5b
-url=https://gitee.com/YingKeWangLuo_admin/main/releases/download/v0.3.1/WinTools.exe
-urlGithub=https://github.com/duochunyu/WinTools/releases/download/v0.3.1/WinTools.exe
+version=0.3.2
+size=1289728
+sha256=5e2a8a1b7eeab362913d21a56695a097ab1893cbc9aba701f5d6f1ae70095d1b
+url=https://github.com/duochunyu/WinTools/releases/download/v0.3.2/WinTools.exe
+urlGithub=https://github.com/duochunyu/WinTools/releases/download/v0.3.2/WinTools.exe
 notes.zh=修复问题并改进稳定性，详情见 Release 页面。
 notes.en=Bug fixes and stability improvements; see the release page for details.
