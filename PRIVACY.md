@@ -18,6 +18,12 @@ Everything WinTools remembers lives on your own machine, under `%LOCALAPPDATA%\W
 Nothing here leaves the machine. Uninstalling means deleting the program and, if you want the data
 gone too, that folder.
 
+The registry is touched in exactly one place, and only if you use it: turning on "start with
+Windows" writes a single value, `WinTools`, under
+`HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`, pointing at the executable with
+`--tray`. Turning it off deletes that value again. Nothing is written to `HKEY_LOCAL_MACHINE`, so no
+administrator rights are ever requested and the change affects only your own account.
+
 ## The only network access
 
 WinTools makes exactly one kind of request, and only when **you** turn it on: the update check.
