@@ -206,16 +206,26 @@ jobs:
       # and both releases must point at the same bytes rather than at a second build.
       - name: Generate update.txt
         shell: pwsh
+        env:
+          GITEE_MIRROR: ${{ steps.giteecfg.outputs.configured }}
         run: |
           $tag = "${{ github.ref_name }}"
           $version = $tag -replace '^v', ''
+          # `url` is what the updater tries first. Advertising the Gitee asset on a run that is
+          # not publishing to Gitee sends every client through a guaranteed 404 before it falls
+          # back to urlGithub (v0.3.1 shipped exactly that way), so the primary URL follows the
+          # mirror configuration.
+          $giteeUrl = "https://gitee.com/YingKeWangLuo_admin/main/releases/download/$tag/WinTools.exe"
+          $githubUrl = "https://github.com/duochunyu/WinTools/releases/download/$tag/WinTools.exe"
+          $primary = $giteeUrl
+          if ($env:GITEE_MIRROR -ne 'true') { $primary = $githubUrl }
           $lines = @(
             'schema=1'
             "version=$version"
             "size=${{ steps.meta.outputs.size }}"
             "sha256=${{ steps.meta.outputs.sha256 }}"
-            "url=https://gitee.com/YingKeWangLuo_admin/main/releases/download/$tag/WinTools.exe"
-            "urlGithub=https://github.com/duochunyu/WinTools/releases/download/$tag/WinTools.exe"
+            "url=$primary"
+            "urlGithub=$githubUrl"
             'notes.zh=修复问题并改进稳定性，详情见 Release 页面。'
             'notes.en=Bug fixes and stability improvements; see the release page for details.'
           )

@@ -89,6 +89,48 @@ WINTOOLS_TEST(Check_OlderVersionIsNotAnUpdate)
     CHECK(!result.feed.has_value());
 }
 
+WINTOOLS_TEST(Check_LaggingMirrorDoesNotHideTheNewerFallback)
+{
+    // The real shape of 2026-11-25: the first source in the list is the Gitee mirror, it still
+    // served 0.3.0 while GitHub already had 0.3.1, and the client said "up to date". The first
+    // source answering with an equal version must not end the search.
+    const auto current = AppVersion::Parse(L"0.3.0");
+    CHECK(current.has_value());
+    int calls = 0;
+
+    const auto result = CheckForUpdate(
+        [&calls](std::wstring_view, std::string& body)
+        {
+            body = Feed(calls++ == 0 ? L"0.3.0" : L"0.3.1");
+            return true;
+        },
+        L"http://localhost/custom", *current);
+
+    CHECK(result.available);
+    CHECK(!result.error);
+    CHECK(result.feed.has_value());
+    CHECK_EQ(result.feed->version.Text(), std::wstring(L"0.3.1"));
+}
+
+WINTOOLS_TEST(Check_AllSourcesUpToDateReportsNoError)
+{
+    const auto current = AppVersion::Parse(L"0.3.0");
+    CHECK(current.has_value());
+
+    const auto result = CheckForUpdate(
+        [](std::wstring_view, std::string& body)
+        {
+            body = Feed(L"0.3.0");
+            return true;
+        },
+        L"", *current);
+
+    CHECK(!result.available);
+    CHECK(!result.error);
+    CHECK(!result.feed.has_value());
+    CHECK_EQ(result.message, std::wstring(L"已是最新版本"));
+}
+
 WINTOOLS_TEST(Check_FallsBackWhenFirstSourceFails)
 {
     const auto current = AppVersion::Parse(L"0.2.0");
