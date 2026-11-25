@@ -164,8 +164,12 @@ std::optional<UpdateFeed> ParseUpdateFeed(std::wstring_view text)
         {
             feed.url = value;
         }
-        else if (key == L"url.github")
+        else if (key == L"urlGithub" || key == L"url.github")
         {
+            // urlGithub is what the release workflow writes and what the struct calls it. The
+            // dotted spelling was read here first and never appeared in a generated feed, which
+            // meant the GitHub fallback was silently always empty; it is still accepted so a
+            // hand-written or older feed does not lose its mirror.
             feed.urlGithub = value;
         }
         else if (key == L"notes.zh")
